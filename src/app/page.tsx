@@ -23,7 +23,7 @@ const CAMERA_PRESETS: Record<CameraView, { position: [number, number, number]; t
   'full-club': { position: [0, 25, 0.1], target: [0, 0, 0] },
   'dance-floor': { position: [0, 8, 8], target: [0, 0, 0] },
   bar: { position: [-14, 5, -2], target: [-17, 1, -6] },
-  screen: { position: [4, 4, -6], target: [8, 3, -12] },
+  screen: { position: [0, 5, -4], target: [0, 3, -13] },
   'top-down': { position: [0, 30, 0.1], target: [0, 0, 0] },
   'follow-me': { position: [0, 8, 8], target: [0, 0, 0] },
 };
@@ -320,6 +320,10 @@ export default function GamePage() {
         onTableClick={handleTableClick}
         highlightedTable={highlightedTable}
         onFloorClick={handleFloorClick}
+        stageVideo={musicQueue[currentSongIndex] ?? null}
+        isPlaying={isPlaying}
+        isMuted={isMuted}
+        onVideoEnd={skipMusic}
       >
         {/* Player avatars */}
         {playerList.map((p) => (

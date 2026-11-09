@@ -1,9 +1,10 @@
 'use client';
 
-import { useRef, useMemo } from 'react';
+import { useRef, useMemo, useEffect } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { Text } from '@react-three/drei';
+import { Text, Html } from '@react-three/drei';
 import * as THREE from 'three';
+import YouTube, { type YouTubeEvent } from 'react-youtube';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -15,11 +16,21 @@ interface TableData {
   seats: number;
 }
 
+interface StageVideo {
+  youtubeId: string;
+  title: string;
+}
+
 interface BarSceneProps {
   tables: TableData[];
   onTableClick: (tableId: string) => void;
   highlightedTable?: string;
   onFloorClick?: (point: { x: number; y: number; z: number }) => void;
+  /** Track currently showing on the stage LED screen (null = idle gradient) */
+  stageVideo?: StageVideo | null;
+  isPlaying?: boolean;
+  isMuted?: boolean;
+  onVideoEnd?: () => void;
   children?: React.ReactNode;
 }
 
@@ -341,7 +352,7 @@ function BarCounter() {
 
 function DJStage() {
   return (
-    <group position={[8, 0, -12]}>
+    <group position={[0, 0, -12]}>
       {/* Elevated stage */}
       <mesh position={[0, 0.3, 0]} castShadow>
         <boxGeometry args={[8, 0.6, 3]} />
@@ -400,10 +411,24 @@ function DJStage() {
 // LED Screen
 // ---------------------------------------------------------------------------
 
-function LEDScreen() {
+// Screen plane is 10 x 5 world units. The embedded iframe is laid out at
+// 1000 x 500 CSS px, so a uniform 0.01 scale maps it exactly onto the plane.
+const SCREEN_W = 10;
+const SCREEN_H = 5;
+const SCREEN_PX_SCALE = 0.01;
+
+function LEDScreen({ stageVideo, isPlaying, isMuted, onVideoEnd }: {
+  stageVideo?: StageVideo | null;
+  isPlaying?: boolean;
+  isMuted?: boolean;
+  onVideoEnd?: () => void;
+}) {
   const ref = useRef<THREE.Mesh>(null);
+  const playerRef = useRef<YouTubeEvent['target'] | null>(null);
+
   useFrame(({ clock }) => {
-    if (ref.current) {
+    // Idle animation only — while a video plays the panel below covers the plane
+    if (ref.current && !stageVideo) {
       const mat = ref.current.material as THREE.MeshStandardMaterial;
       const t = clock.getElapsedTime();
       const r = Math.sin(t * 0.3) * 0.3 + 0.4;
@@ -412,18 +437,84 @@ function LEDScreen() {
       mat.emissive.setRGB(r, g, b);
     }
   });
+
+  // Keep the live player in sync with room state
+  useEffect(() => {
+    const p = playerRef.current;
+    if (!p) return;
+    if (isMuted) p.mute();
+    else p.unMute();
+  }, [isMuted, stageVideo]);
+
+  useEffect(() => {
+    const p = playerRef.current;
+    if (!p) return;
+    if (isPlaying) p.playVideo();
+    else p.pauseVideo();
+  }, [isPlaying, stageVideo]);
+
   return (
-    <group position={[8, 3.2, -13.7]}>
+    <group position={[0, 3.2, -13.7]}>
       {/* Screen frame */}
       <mesh position={[0, 0, 0.05]}>
-        <boxGeometry args={[10.5, 5.5, 0.15]} />
+        <boxGeometry args={[SCREEN_W + 0.5, SCREEN_H + 0.5, 0.15]} />
         <meshStandardMaterial color={'#111'} />
       </mesh>
       {/* Screen */}
       <mesh ref={ref} position={[0, 0, 0.15]}>
-        <planeGeometry args={[10, 5]} />
-        <meshStandardMaterial color={'#111'} emissive={NEON_PURPLE} emissiveIntensity={1.5} />
+        <planeGeometry args={[SCREEN_W, SCREEN_H]} />
+        <meshStandardMaterial
+          color={'#111'}
+          emissive={stageVideo ? '#000' : NEON_PURPLE}
+          emissiveIntensity={stageVideo ? 0 : 1.5}
+        />
       </mesh>
+
+      {/* Live YouTube video projected onto the screen */}
+      {stageVideo && (
+        <Html
+          transform
+          position={[0, 0, 0.17]}
+          scale={SCREEN_PX_SCALE}
+          // Stay beneath the 2D HUD panels (which sit at z-40)
+          zIndexRange={[10, 0]}
+          style={{ pointerEvents: 'none' }}
+        >
+          <div style={{ width: 1000, height: 500, background: '#000', overflow: 'hidden' }}>
+            <YouTube
+              key={stageVideo.youtubeId}
+              videoId={stageVideo.youtubeId}
+              opts={{
+                width: '1000',
+                height: '500',
+                playerVars: {
+                  autoplay: 1,
+                  controls: 0,
+                  modestbranding: 1,
+                  rel: 0,
+                  playsinline: 1,
+                },
+              }}
+              onReady={(e: YouTubeEvent) => {
+                playerRef.current = e.target;
+                if (isMuted) e.target.mute();
+                else e.target.unMute();
+                if (isPlaying) e.target.playVideo();
+                else e.target.pauseVideo();
+              }}
+              onEnd={() => onVideoEnd?.()}
+            />
+          </div>
+        </Html>
+      )}
+
+      {/* Spill light so the room reacts to the screen */}
+      <pointLight
+        color={stageVideo ? '#ffffff' : NEON_PURPLE}
+        intensity={stageVideo ? 14 : 6}
+        distance={18}
+        position={[0, 0, 2]}
+      />
     </group>
   );
 }
@@ -596,7 +687,7 @@ function Lighting() {
       <pointLight color={'#ff9944'} intensity={12} distance={18} position={[-17, 3, -5]} />
 
       {/* Stage lights */}
-      <pointLight color={NEON_CYAN} intensity={10} distance={15} position={[8, 4, -11]} />
+      <pointLight color={NEON_CYAN} intensity={10} distance={15} position={[0, 4, -11]} />
 
       <AnimatedLights />
     </>
@@ -625,9 +716,9 @@ const DEFAULT_BOOTH_POSITIONS: { pos: [number, number, number]; label: string }[
   { pos: [3, 0, 7], label: 'V2' },
   { pos: [-3, 0, 11], label: 'V3' },
   { pos: [3, 0, 11], label: 'V4' },
-  // Around stage
-  { pos: [14, 0, -8], label: 'SV1' },
-  { pos: [14, 0, -4], label: 'SV2' },
+  // Around stage (centered stage spans x -4..4 at z -12)
+  { pos: [-7, 0, -11], label: 'SV1' },
+  { pos: [7, 0, -11], label: 'SV2' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -639,6 +730,10 @@ function SceneContent({
   onTableClick,
   highlightedTable,
   onFloorClick,
+  stageVideo,
+  isPlaying,
+  isMuted,
+  onVideoEnd,
   children,
 }: BarSceneProps) {
   const allTables = useMemo(() => {
@@ -659,7 +754,12 @@ function SceneContent({
       <DanceFloorTiles />
       <DiscoBall />
       <DJStage />
-      <LEDScreen />
+      <LEDScreen
+        stageVideo={stageVideo}
+        isPlaying={isPlaying}
+        isMuted={isMuted}
+        onVideoEnd={onVideoEnd}
+      />
 
       {/* Clickable floor for movement */}
       <mesh
@@ -707,7 +807,7 @@ function SceneContent({
       {/* Neon signs */}
       <NeonSign text="BAR" position={[-17, 3.8, -13.8]} color={NEON_RED} fontSize={0.8} />
       <NeonSign text="OPEN" position={[-17, 3, -13.8]} color={NEON_GREEN} fontSize={0.5} />
-      <NeonSign text="DANCE" position={[0, 4, -5]} color={NEON_PINK} fontSize={0.7} />
+      <NeonSign text="DANCE" position={[-9, 4, -13.8]} color={NEON_PINK} fontSize={0.7} />
       <NeonSign text="VIP" position={[20, 3.8, -13.8]} color={NEON_PURPLE} fontSize={0.8} />
       <NeonSign text="DRINK or DANCE" position={[-17, 4.5, -7]} color={NEON_YELLOW} fontSize={0.3} rotation={[0, Math.PI / 2, 0]} />
       <NeonSign text="HANOI" position={[20, 3, 5]} color={NEON_RED} fontSize={0.7} rotation={[0, -Math.PI / 2, 0]} />
@@ -726,7 +826,17 @@ function SceneContent({
 
 export { SceneContent };
 
-export default function BarScene({ tables, onTableClick, highlightedTable, onFloorClick, children }: BarSceneProps) {
+export default function BarScene({
+  tables,
+  onTableClick,
+  highlightedTable,
+  onFloorClick,
+  stageVideo,
+  isPlaying,
+  isMuted,
+  onVideoEnd,
+  children,
+}: BarSceneProps) {
   return (
     <Canvas
       shadows
@@ -738,7 +848,16 @@ export default function BarScene({ tables, onTableClick, highlightedTable, onFlo
         state.gl.setClearColor('#0a0a14');
       }}
     >
-      <SceneContent tables={tables} onTableClick={onTableClick} highlightedTable={highlightedTable} onFloorClick={onFloorClick}>
+      <SceneContent
+        tables={tables}
+        onTableClick={onTableClick}
+        highlightedTable={highlightedTable}
+        onFloorClick={onFloorClick}
+        stageVideo={stageVideo}
+        isPlaying={isPlaying}
+        isMuted={isMuted}
+        onVideoEnd={onVideoEnd}
+      >
         {children}
       </SceneContent>
     </Canvas>

@@ -1,7 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
-import YouTube, { type YouTubeEvent } from 'react-youtube';
+import { useState } from 'react';
 import type { MusicTrack } from '@/types';
 
 interface MusicPlayerProps {
@@ -31,7 +30,6 @@ export default function MusicPlayer({
   queue,
   currentIndex,
   isPlaying,
-  isMuted,
   onAddTrack,
   onSkip,
   onPlayPause,
@@ -40,7 +38,6 @@ export default function MusicPlayer({
   const [url, setUrl] = useState('');
   const [title, setTitle] = useState('');
   const [error, setError] = useState('');
-  const playerRef = useRef<{ mute: () => void; unMute: () => void } | null>(null);
 
   const currentTrack = queue[currentIndex] ?? null;
   const upcoming = queue.slice(currentIndex + 1);
@@ -61,22 +58,6 @@ export default function MusicPlayer({
     setTitle('');
   };
 
-  const onReady = (e: YouTubeEvent) => {
-    playerRef.current = e.target;
-    if (isMuted) e.target.mute();
-    else e.target.unMute();
-  };
-
-  const onEnd = () => {
-    onSkip();
-  };
-
-  // Sync mute state when it changes
-  if (playerRef.current) {
-    if (isMuted) playerRef.current.mute();
-    else playerRef.current.unMute();
-  }
-
   return (
     <div className="flex w-full max-w-lg flex-col rounded-2xl border border-white/10 bg-gray-950/90 shadow-2xl shadow-cyan-900/20 backdrop-blur-xl">
       {/* Header */}
@@ -94,26 +75,21 @@ export default function MusicPlayer({
         )}
       </div>
 
-      {/* YouTube embed */}
-      <div className="aspect-video w-full bg-black">
+      {/* Preview — the real playback happens on the stage LED screen */}
+      <div className="relative aspect-video w-full overflow-hidden bg-black">
         {currentTrack ? (
-          <YouTube
-            videoId={currentTrack.youtubeId}
-            opts={{
-              width: '100%',
-              height: '100%',
-              playerVars: {
-                autoplay: isPlaying ? 1 : 0,
-                controls: 0,
-                modestbranding: 1,
-                rel: 0,
-              },
-            }}
-            className="h-full w-full"
-            iframeClassName="h-full w-full"
-            onReady={onReady}
-            onEnd={onEnd}
-          />
+          <>
+            <img
+              src={`https://i.ytimg.com/vi/${currentTrack.youtubeId}/hqdefault.jpg`}
+              alt={currentTrack.title}
+              className="h-full w-full object-cover opacity-50"
+            />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <span className="rounded-full bg-black/70 px-3 py-1 text-xs text-cyan-300">
+                📺 Đang chiếu trên màn hình sân khấu
+              </span>
+            </div>
+          </>
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-white/30">
             Chưa có bài nào trong hàng chờ
