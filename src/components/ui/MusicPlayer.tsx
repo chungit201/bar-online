@@ -14,7 +14,8 @@ interface MusicPlayerProps {
   isHost: boolean;
 }
 
-function extractYouTubeId(url: string): string | null {
+/** Accepts a full YouTube URL in any of its shapes, or a bare 11-char id */
+export function extractYouTubeId(url: string): string | null {
   const patterns = [
     /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([a-zA-Z0-9_-]{11})/,
     /^([a-zA-Z0-9_-]{11})$/,
@@ -79,6 +80,9 @@ export default function MusicPlayer({
       <div className="relative aspect-video w-full overflow-hidden bg-black">
         {currentTrack ? (
           <>
+            {/* next/image would need an i.ytimg.com remotePattern for a
+                thumbnail that is already cheap and CDN-served */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={`https://i.ytimg.com/vi/${currentTrack.youtubeId}/hqdefault.jpg`}
               alt={currentTrack.title}

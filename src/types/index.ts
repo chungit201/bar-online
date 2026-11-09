@@ -57,6 +57,8 @@ export interface Vec3 {
 // ---- Avatar ----------------------------------------------------------------
 
 export interface AvatarConfig {
+  /** Id from the character catalog (src/components/avatar/characters.ts) */
+  characterId?: string;
   gender: Gender;
   hairstyle: string;
   hairColor: string;
@@ -183,6 +185,51 @@ export interface GameState {
   isConnected: boolean;
 }
 
+// ---- TikTok LIVE -----------------------------------------------------------
+
+/** A TikTok viewer who has sent gifts, ranked by diamonds spent */
+export interface TikTokGifter {
+  /** TikTok uniqueId — stable key for the leaderboard */
+  userId: string;
+  nickname: string;
+  avatarUrl: string;
+  diamonds: number;
+}
+
+/** A TikTok viewer currently shown as a character on the floor */
+export interface TikTokViewer {
+  userId: string;
+  nickname: string;
+  avatarUrl: string;
+  position: Vec3;
+  /** Server time they first appeared — drives the drop-in and camera focus */
+  joinedAt: number;
+}
+
+/**
+ * One-off reaction triggered by a viewer.
+ *
+ * 'focus' and 'skin' come from gifts and move the camera; 'jump' comes from a
+ * like and only bounces that character, so a stream of hearts can't yank the
+ * camera around.
+ */
+export interface TikTokAction {
+  kind: 'focus' | 'skin' | 'jump';
+  userId: string;
+  nickname: string;
+  at: number;
+}
+
+export interface TikTokStatus {
+  connected: boolean;
+  connecting: boolean;
+  /** Channel without the leading @ */
+  username: string;
+  viewerCount: number;
+  likeCount: number;
+  lastError: string | null;
+}
+
 // ---- Socket.io Events ------------------------------------------------------
 
 export interface ServerToClientEvents {
@@ -220,9 +267,19 @@ export interface ServerToClientEvents {
   'music:queueUpdated': (queue: MusicQueue) => void;
   'music:nowPlaying': (track: MusicTrack | null) => void;
   'music:positionSync': (data: { positionSeconds: number }) => void;
+
+  // TikTok LIVE
+  'tiktok:status': (status: TikTokStatus) => void;
+  'tiktok:leaderboard': (top: TikTokGifter[]) => void;
+  'tiktok:viewers': (viewers: TikTokViewer[]) => void;
+  'tiktok:action': (action: TikTokAction) => void;
 }
 
 export interface ClientToServerEvents {
+  // TikTok LIVE (host only)
+  'tiktok:connect': (data: { username: string }) => void;
+  'tiktok:disconnect': () => void;
+
   // Room
   'room:create': (data: { name: string; maxCapacity: number; isPublic: boolean; password?: string }) => void;
   'room:join': (data: { roomId: string; password?: string }) => void;

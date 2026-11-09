@@ -14,7 +14,12 @@ import type {
   AnimationState,
   Vec3,
   AvatarConfig,
+  TikTokStatus,
+  TikTokGifter,
+  TikTokAction,
+  TikTokViewer,
 } from '@/types';
+import { DANCE_CLIPS } from '@/components/avatar/dances';
 
 // ---------------------------------------------------------------------------
 // State
@@ -34,6 +39,19 @@ interface GameState {
   reactions: { playerId: string; playerName: string; reaction: string }[];
   roomError: string | null;
   recentOrders: DrinkOrder[];
+  /** Most recent arrival, for the drop-in effect and camera focus */
+  lastJoined: { id: string; at: number } | null;
+  tiktok: TikTokStatus | null;
+  /** Top 3 gift senders — they take over the stage */
+  tiktokTop: TikTokGifter[];
+  /** Latest one-off gift action (rose = focus, TikTok gift = skin swap) */
+  tiktokAction: TikTokAction | null;
+  /** TikTok userId -> clip id, accumulated from skin-swap gifts */
+  tiktokSkins: Record<string, string>;
+  /** TikTok viewers shown as characters on the floor */
+  tiktokViewers: TikTokViewer[];
+  /** TikTok userId -> timestamp of their latest like, which makes them hop */
+  tiktokJumps: Record<string, number>;
 }
 
 const initialState: GameState = {
@@ -50,6 +68,13 @@ const initialState: GameState = {
   reactions: [],
   roomError: null,
   recentOrders: [],
+  lastJoined: null,
+  tiktok: null,
+  tiktokTop: [],
+  tiktokAction: null,
+  tiktokSkins: {},
+  tiktokViewers: [],
+  tiktokJumps: {},
 };
 
 // ---------------------------------------------------------------------------
@@ -73,6 +98,11 @@ type Action =
   | { type: 'CHAT_MESSAGE'; message: ChatMessage }
   | { type: 'MUSIC_QUEUE_UPDATED'; queue: MusicQueue }
   | { type: 'MUSIC_NOW_PLAYING'; track: MusicTrack | null }
+  | { type: 'TIKTOK_STATUS'; status: TikTokStatus }
+  | { type: 'TIKTOK_LEADERBOARD'; top: TikTokGifter[] }
+  | { type: 'TIKTOK_VIEWERS'; viewers: TikTokViewer[] }
+  | { type: 'TIKTOK_ACTION'; action: TikTokAction }
+  | { type: 'TIKTOK_ACTION_CLEAR' }
   | { type: 'DRINK_MENU'; drinks: Drink[] }
   | { type: 'DRINK_ORDERED'; order: DrinkOrder }
   | { type: 'TABLE_PLAYER_SAT'; playerId: string; tableId: string; seatIndex: number }
@@ -97,6 +127,11 @@ function reducer(state: GameState, action: Action): GameState {
         currentSongIndex: action.room.musicQueue.currentIndex,
         isPlaying: action.room.musicQueue.isPlaying,
         messages: [],
+        // The server broadcasts room:playerJoined to everyone *except* the
+        // person arriving, so without this you'd never see your own entrance.
+        lastJoined: state.localPlayerId
+          ? { id: state.localPlayerId, at: Date.now() }
+          : null,
       };
 
     case 'ROOM_LEFT':
@@ -104,7 +139,11 @@ function reducer(state: GameState, action: Action): GameState {
 
     case 'ROOM_PLAYER_JOINED': {
       const players = { ...state.players, [action.player.id]: action.player };
-      return { ...state, players };
+      return {
+        ...state,
+        players,
+        lastJoined: { id: action.player.id, at: Date.now() },
+      };
     }
 
     case 'ROOM_PLAYER_LEFT': {
@@ -174,6 +213,47 @@ function reducer(state: GameState, action: Action): GameState {
 
     case 'MUSIC_NOW_PLAYING':
       return state; // handled via queue update primarily
+
+    case 'TIKTOK_STATUS':
+      return { ...state, tiktok: action.status };
+
+    case 'TIKTOK_LEADERBOARD':
+      return { ...state, tiktokTop: action.top };
+
+    case 'TIKTOK_VIEWERS':
+      return { ...state, tiktokViewers: action.viewers };
+
+    case 'TIKTOK_ACTION': {
+      // A like only bounces that one character. It must not land in
+      // tiktokAction, which is what the camera watches for.
+      if (action.action.kind === 'jump') {
+        return {
+          ...state,
+          tiktokJumps: {
+            ...state.tiktokJumps,
+            [action.action.userId]: action.action.at,
+          },
+        };
+      }
+      if (action.action.kind !== 'skin') {
+        return { ...state, tiktokAction: action.action };
+      }
+      // Advance that viewer to the next clip, so repeat gifts keep cycling
+      const { userId } = action.action;
+      const current = state.tiktokSkins[userId];
+      const at = DANCE_CLIPS.findIndex((c) => c.id === current);
+      const next = DANCE_CLIPS[(at + 1) % DANCE_CLIPS.length];
+      return {
+        ...state,
+        tiktokAction: action.action,
+        tiktokSkins: { ...state.tiktokSkins, [userId]: next.id },
+      };
+    }
+
+    // Releases the camera. Without this the pose stays derivable forever and
+    // the view never finds its way home after a gift.
+    case 'TIKTOK_ACTION_CLEAR':
+      return state.tiktokAction === null ? state : { ...state, tiktokAction: null };
 
     case 'DRINK_MENU':
       return { ...state, drinkMenu: action.drinks };
@@ -295,6 +375,10 @@ export function useGame() {
     );
 
     // drinks
+    s.on('tiktok:status', (status) => dispatch({ type: 'TIKTOK_STATUS', status }));
+    s.on('tiktok:leaderboard', (top) => dispatch({ type: 'TIKTOK_LEADERBOARD', top }));
+    s.on('tiktok:viewers', (viewers) => dispatch({ type: 'TIKTOK_VIEWERS', viewers }));
+    s.on('tiktok:action', (action) => dispatch({ type: 'TIKTOK_ACTION', action }));
     s.on('drink:menu', (drinks) => dispatch({ type: 'DRINK_MENU', drinks }));
     s.on('drink:ordered', (order) => dispatch({ type: 'DRINK_ORDERED', order }));
 
@@ -346,8 +430,35 @@ export function useGame() {
     emit().emit('table:leave');
   }, [emit]);
 
+  // The server echoes movement and animation with socket.to(), which excludes
+  // the sender. That's right for the network — we already know what we did —
+  // but it means our own entry in `players` is never updated, so our avatar
+  // sat frozen at its spawn point on our own screen while everyone else saw
+  // it move. Apply our own actions locally.
   const movePlayer = useCallback((position: Vec3, rotation: number) => {
     emit().emit('player:move', { position, rotation });
+    if (state.localPlayerId) {
+      dispatch({ type: 'PLAYER_MOVED', playerId: state.localPlayerId, position, rotation });
+    }
+  }, [emit, state.localPlayerId]);
+
+  const setAnimation = useCallback((animation: AnimationState) => {
+    emit().emit('player:animate', { animation });
+    if (state.localPlayerId) {
+      dispatch({ type: 'PLAYER_ANIMATION', playerId: state.localPlayerId, animation });
+    }
+  }, [emit, state.localPlayerId]);
+
+  const connectTikTok = useCallback((username: string) => {
+    emit().emit('tiktok:connect', { username });
+  }, [emit]);
+
+  const clearTikTokAction = useCallback(() => {
+    dispatch({ type: 'TIKTOK_ACTION_CLEAR' });
+  }, []);
+
+  const disconnectTikTok = useCallback(() => {
+    emit().emit('tiktok:disconnect');
   }, [emit]);
 
   const createRoom = useCallback(
@@ -387,6 +498,10 @@ export function useGame() {
     sitAtTable,
     leaveTable,
     movePlayer,
+    setAnimation,
+    connectTikTok,
+    disconnectTikTok,
+    clearTikTokAction,
     createRoom,
     joinRoom,
     leaveRoom,

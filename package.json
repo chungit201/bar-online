@@ -20,6 +20,7 @@
     "socket.io": "^4.8.4",
     "socket.io-client": "^4.8.4",
     "three": "^0.187.0",
+    "tiktok-live-connector": "^2.5.0",
     "uuid": "^14.0.3"
   },
   "devDependencies": {

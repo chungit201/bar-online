@@ -31,7 +31,27 @@ export function usePlayerControls({ currentPosition, onMove }: UsePlayerControls
   // ---- keyboard -----------------------------------------------------------
 
   useEffect(() => {
+    // WASD doubles as movement and as ordinary letters. Without this guard the
+    // listener swallows every "a"/"w"/"s"/"d" typed into a room name, nickname
+    // or chat box, since it preventDefault()s on window.
+    const isTyping = (target: EventTarget | null) => {
+      const el = target as HTMLElement | null;
+      if (!el) return false;
+      return (
+        el.tagName === 'INPUT' ||
+        el.tagName === 'TEXTAREA' ||
+        el.tagName === 'SELECT' ||
+        el.isContentEditable
+      );
+    };
+
     const onKeyDown = (e: KeyboardEvent) => {
+      if (isTyping(e.target)) {
+        // Drop any held keys, otherwise focusing a field mid-stride leaves the
+        // player walking with no keyup ever arriving to stop them.
+        keysRef.current.clear();
+        return;
+      }
       const key = e.key.toLowerCase();
       if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
         e.preventDefault();

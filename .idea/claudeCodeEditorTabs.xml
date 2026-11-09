@@ -1,19 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ClaudeCodeEditorTabs">
-    <option name="activeSessionId" value="a84b8cc1-4c6c-4ed7-a8ad-8910b0c6e3b9" />
+    <option name="activeSessionId" value="4b8c88ca-3e5d-4225-a3c2-908c261626af" />
     <option name="openSessionIds">
       <list>
         <option value="a84b8cc1-4c6c-4ed7-a8ad-8910b0c6e3b9" />
+        <option value="4b8c88ca-3e5d-4225-a3c2-908c261626af" />
       </list>
     </option>
     <option name="sessionPaths">
       <map>
+        <entry key="4b8c88ca-3e5d-4225-a3c2-908c261626af" value="/sessions/71507eee-07c9-47c2-a5f8-2ed6ec9bd43d" />
         <entry key="a84b8cc1-4c6c-4ed7-a8ad-8910b0c6e3b9" value="/sessions/0bd79e4d-d787-4bb9-8526-66faee262430" />
       </map>
     </option>
     <option name="sessionTitles">
       <map>
+        <entry key="4b8c88ca-3e5d-4225-a3c2-908c261626af" value="Port 3001 EADDRINUSE" />
         <entry key="a84b8cc1-4c6c-4ed7-a8ad-8910b0c6e3b9" value="check tiến độ clone https://superclub.live/ đã xon" />
       </map>
     </option>

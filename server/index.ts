@@ -11,9 +11,13 @@ import type {
   Drink,
   DrinkOrder,
   RoomSummary,
+  TikTokGifter,
+  TikTokViewer,
+  Vec3,
   ServerToClientEvents,
   ClientToServerEvents,
 } from '../src/types';
+import { createTikTokBridge } from './tiktok';
 
 const port = parseInt(process.env.SOCKET_PORT || '3001', 10);
 
@@ -22,6 +26,128 @@ const port = parseInt(process.env.SOCKET_PORT || '3001', 10);
 // ---------------------------------------------------------------------------
 
 const rooms = new Map<string, Room>();
+const tiktok = createTikTokBridge();
+/** roomId -> TikTok userId -> cumulative gift value, for the stage top 3 */
+const giftLedger = new Map<string, Map<string, TikTokGifter>>();
+
+/** Gift names vary by locale, so match loosely on the recognisable word */
+function classifyGift(name: string): 'rose' | 'tiktok' | null {
+  const n = name.toLowerCase();
+  if (n.includes('rose') || n.includes('hoa hồng')) return 'rose';
+  if (n.includes('tiktok')) return 'tiktok';
+  return null;
+}
+
+// Viewers are shown as characters on the floor. Capped so a busy LIVE can't
+// drop thousands of sprites into the scene, and expired so people who stopped
+// interacting eventually make room for those who are still active.
+const MAX_VIEWERS = 40;
+// TikTok never broadcasts a "viewer left" event — MemberMessageAction only has
+// JOINED and SUBSCRIBED — so presence can only be inferred from how recently
+// someone interacted. Two minutes keeps the room close to who is actually
+// watching, at the cost of dropping people who sit silently.
+const VIEWER_IDLE_MS = 2 * 60 * 1000;
+const VIEWER_SWEEP_MS = 15 * 1000;
+
+interface TrackedViewer extends TikTokViewer {
+  lastSeen: number;
+}
+const viewerRegistry = new Map<string, Map<string, TrackedViewer>>();
+
+/**
+ * Record viewer activity. Returns true when the visible set changed, so the
+ * caller only broadcasts on a real change rather than on every like.
+ */
+function touchViewer(
+  roomId: string,
+  userId: string,
+  nickname: string,
+  avatarUrl: string,
+): boolean {
+  let room = viewerRegistry.get(roomId);
+  if (!room) {
+    room = new Map();
+    viewerRegistry.set(roomId, room);
+  }
+
+  const now = Date.now();
+  let changed = false;
+
+  for (const [id, v] of room) {
+    if (now - v.lastSeen > VIEWER_IDLE_MS) {
+      room.delete(id);
+      changed = true;
+    }
+  }
+
+  const existing = room.get(userId);
+  if (existing) {
+    existing.lastSeen = now;
+    if (avatarUrl && !existing.avatarUrl) {
+      existing.avatarUrl = avatarUrl;
+      changed = true;
+    }
+    return changed;
+  }
+
+  if (room.size >= MAX_VIEWERS) {
+    // Evict the least recently active so new arrivals can still show up
+    let oldestId = '';
+    let oldestAt = Infinity;
+    for (const [id, v] of room) {
+      if (v.lastSeen < oldestAt) {
+        oldestAt = v.lastSeen;
+        oldestId = id;
+      }
+    }
+    if (oldestId) room.delete(oldestId);
+  }
+
+  // Spiral slots keep the crowd on the dance floor instead of scattered
+  const used = new Set([...room.values()].map((v) => `${v.position.x},${v.position.z}`));
+  let slot = 0;
+  let pos = spawnPosition(slot);
+  while (used.has(`${pos.x},${pos.z}`) && slot < MAX_VIEWERS * 2) {
+    slot += 1;
+    pos = spawnPosition(slot);
+  }
+
+  room.set(userId, { userId, nickname, avatarUrl, position: pos, joinedAt: now, lastSeen: now });
+  return true;
+}
+
+/** Drop viewers who went quiet. Returns true when anything was removed. */
+function sweepViewers(roomId: string): boolean {
+  const room = viewerRegistry.get(roomId);
+  if (!room) return false;
+  const now = Date.now();
+  let changed = false;
+  for (const [id, v] of room) {
+    if (now - v.lastSeen > VIEWER_IDLE_MS) {
+      room.delete(id);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function visibleViewers(roomId: string): TikTokViewer[] {
+  const room = viewerRegistry.get(roomId);
+  if (!room) return [];
+  return [...room.values()].map(({ userId, nickname, avatarUrl, position, joinedAt }) => ({
+    userId,
+    nickname,
+    avatarUrl,
+    position,
+    joinedAt,
+  }));
+}
+
+function topGifters(roomId: string): TikTokGifter[] {
+  const ledger = giftLedger.get(roomId);
+  if (!ledger) return [];
+  return [...ledger.values()].sort((a, b) => b.diamonds - a.diamonds).slice(0, 3);
+}
 const socketToRoom = new Map<string, string>();
 const socketToPlayer = new Map<string, string>();
 
@@ -81,6 +207,24 @@ function defaultMusicQueue(): MusicQueue {
   return { tracks: [], currentIndex: -1, isPlaying: false, positionSeconds: 0 };
 }
 
+// The dance floor is a 6x6 grid centred on the origin, so it spans ±3.
+// Placing arrivals on a sunflower spiral keeps the first dozen people on and
+// around it, then rings outward only once the room genuinely fills up —
+// random scatter made even three players look like they were avoiding each
+// other, and could drop two of them on the same spot.
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const SPAWN_SPACING = 0.85;
+
+function spawnPosition(index: number): Vec3 {
+  const radius = SPAWN_SPACING * Math.sqrt(index);
+  const angle = index * GOLDEN_ANGLE;
+  return {
+    x: Number((radius * Math.cos(angle)).toFixed(3)),
+    y: 0,
+    z: Number((radius * Math.sin(angle)).toFixed(3)),
+  };
+}
+
 function getPublicRooms(): RoomSummary[] {
   const list: RoomSummary[] = [];
   for (const room of rooms.values()) {
@@ -133,6 +277,10 @@ function removePlayerFromRoom(
 
   const remaining = Object.keys(room.players);
   if (remaining.length === 0) {
+    // Drop the TikTok link too, or its reconnect timer keeps a dead room alive
+    tiktok.disconnect(roomId);
+    giftLedger.delete(roomId);
+    viewerRegistry.delete(roomId);
     rooms.delete(roomId);
     return;
   }
@@ -155,11 +303,23 @@ const io = new SocketIOServer<ClientToServerEvents, ServerToClientEvents>(server
   cors: { origin: '*' },
 });
 
+// Expiry has to run on a timer, not only when an event arrives: if every
+// viewer goes quiet there are no events left to trigger the cleanup, and the
+// crowd would stay on the floor forever.
+setInterval(() => {
+  for (const roomId of viewerRegistry.keys()) {
+    if (sweepViewers(roomId)) {
+      io.to(roomId).emit('tiktok:viewers', visibleViewers(roomId));
+    }
+  }
+}, VIEWER_SWEEP_MS);
+
 io.on('connection', (socket) => {
   console.log(`[socket] connected: ${socket.id}`);
 
   const playerId = uuidv4();
   socketToPlayer.set(socket.id, playerId);
+
 
   socket.emit('connect:welcome', { playerId, rooms: getPublicRooms() });
 
@@ -183,7 +343,7 @@ io.on('connection', (socket) => {
         shoes: 'sneakers',
         accessory: null,
       },
-      position: { x: 0, y: 0, z: 0 },
+      position: spawnPosition(0),
       rotation: 0,
       animation: 'idle',
       tableId: null,
@@ -244,7 +404,8 @@ io.on('connection', (socket) => {
         shoes: 'sneakers',
         accessory: null,
       },
-      position: { x: Math.random() * 4 - 2, y: 0, z: Math.random() * 4 - 2 },
+      // Next free slot on the spiral, so arrivals fan out from the centre
+      position: spawnPosition(Object.keys(room.players).length),
       rotation: 0,
       animation: 'idle',
       tableId: null,
@@ -256,6 +417,10 @@ io.on('connection', (socket) => {
     socketToRoom.set(socket.id, room.id);
 
     socket.emit('room:joined', room);
+    // Catch the newcomer up, otherwise their stage shows the default cast
+    socket.emit('tiktok:status', tiktok.getStatus(room.id));
+    socket.emit('tiktok:leaderboard', topGifters(room.id));
+    socket.emit('tiktok:viewers', visibleViewers(room.id));
     socket.to(room.id).emit('room:playerJoined', player);
   });
 
@@ -320,7 +485,10 @@ io.on('connection', (socket) => {
     const player = room.players[playerId];
     if (player) player.avatar = data.avatar;
 
-    socket.to(roomId).emit('player:avatarUpdated', {
+    // io.to, not socket.to: the sender must receive this too. The client only
+    // ever learns a player's avatar from the server, so excluding the sender
+    // leaves them stuck on the default avatar they were given on join.
+    io.to(roomId).emit('player:avatarUpdated', {
       playerId,
       avatar: data.avatar,
     });
@@ -584,6 +752,134 @@ io.on('connection', (socket) => {
   });
 
   // --- Disconnect --------------------------------------------------------
+
+  // --- TikTok LIVE -------------------------------------------------------
+
+  socket.on('tiktok:connect', (data) => {
+    const roomId = socketToRoom.get(socket.id);
+    if (!roomId) return;
+    const room = rooms.get(roomId);
+    if (!room) return;
+
+    // Only the host links a channel — otherwise any guest could repoint the
+    // room at their own stream.
+    if (room.hostId !== playerId) {
+      socket.emit('room:error', { message: 'Chỉ chủ phòng mới kết nối được TikTok' });
+      return;
+    }
+
+    const say = (text: string) => {
+      const message: ChatMessage = {
+        id: uuidv4(),
+        senderId: 'tiktok',
+        senderName: 'TikTok',
+        text,
+        timestamp: Date.now(),
+        scope: 'all',
+      };
+      io.to(roomId).emit('chat:message', message);
+    };
+
+    tiktok.connect(roomId, data.username, {
+      onStatus: (status) => io.to(roomId).emit('tiktok:status', status),
+
+      onChat: ({ userId, nickname, avatarUrl, comment }) => {
+        if (touchViewer(roomId, userId, nickname, avatarUrl)) {
+          io.to(roomId).emit('tiktok:viewers', visibleViewers(roomId));
+        }
+        const message: ChatMessage = {
+          id: uuidv4(),
+          // Prefixed id keeps viewers distinct from real players without
+          // needing a Player record for every commenter
+          senderId: `tiktok:${nickname}`,
+          senderName: `🎵 ${nickname}`,
+          text: comment,
+          timestamp: Date.now(),
+          scope: 'all',
+        };
+        io.to(roomId).emit('chat:message', message);
+      },
+
+      onLike: ({ userId, nickname, avatarUrl }) => {
+        if (touchViewer(roomId, userId, nickname, avatarUrl)) {
+          io.to(roomId).emit('tiktok:viewers', visibleViewers(roomId));
+        }
+        io.to(roomId).emit('chat:reaction', {
+          playerId: `tiktok:${nickname}`,
+          playerName: nickname,
+          reaction: 'heart',
+        });
+        // A like makes their character hop. Deliberately not a 'focus': likes
+        // arrive in bursts and would leave the camera jumping between people.
+        io.to(roomId).emit('tiktok:action', {
+          kind: 'jump',
+          userId,
+          nickname,
+          at: Date.now(),
+        });
+      },
+
+      onGift: ({ userId, nickname, avatarUrl, giftName, count, diamonds }) => {
+        if (touchViewer(roomId, userId, nickname, avatarUrl)) {
+          io.to(roomId).emit('tiktok:viewers', visibleViewers(roomId));
+        }
+        say(`🎁 ${nickname} tặng ${giftName} x${count}${diamonds ? ` (${diamonds} 💎)` : ''}`);
+        io.to(roomId).emit('chat:reaction', {
+          playerId: `tiktok:${nickname}`,
+          playerName: nickname,
+          // Big gifts get fire, small ones a toast
+          reaction: diamonds >= 100 ? 'fire' : 'cheers',
+        });
+
+        // Running total decides who stands on stage
+        let ledger = giftLedger.get(roomId);
+        if (!ledger) {
+          ledger = new Map();
+          giftLedger.set(roomId, ledger);
+        }
+        const prev = ledger.get(userId);
+        ledger.set(userId, {
+          userId,
+          nickname,
+          // Keep the last non-empty avatar; some messages omit it
+          avatarUrl: avatarUrl || prev?.avatarUrl || '',
+          diamonds: (prev?.diamonds ?? 0) + Math.max(diamonds, count),
+        });
+        io.to(roomId).emit('tiktok:leaderboard', topGifters(roomId));
+
+        // Every gift points the camera at whoever sent it. `kind` only says
+        // whether this gift ALSO swaps their character — the client focuses on
+        // any action regardless of kind.
+        io.to(roomId).emit('tiktok:action', {
+          kind: classifyGift(giftName) === 'tiktok' ? 'skin' : 'focus',
+          userId,
+          nickname,
+          at: Date.now(),
+        });
+      },
+
+      onSocial: ({ nickname, kind }) => {
+        say(kind === 'follow' ? `💜 ${nickname} đã follow` : `🔁 ${nickname} đã chia sẻ LIVE`);
+      },
+
+      onMember: ({ userId, nickname, avatarUrl }) => {
+        say(`👋 ${nickname} vừa vào LIVE`);
+        if (touchViewer(roomId, userId, nickname, avatarUrl)) {
+          io.to(roomId).emit('tiktok:viewers', visibleViewers(roomId));
+        }
+      },
+    });
+  });
+
+  socket.on('tiktok:disconnect', () => {
+    const roomId = socketToRoom.get(socket.id);
+    if (!roomId) return;
+    const room = rooms.get(roomId);
+    if (!room || room.hostId !== playerId) return;
+
+    tiktok.disconnect(roomId);
+    io.to(roomId).emit('tiktok:status', tiktok.getStatus(roomId));
+  });
 
   socket.on('disconnect', () => {
     console.log(`[socket] disconnected: ${socket.id}`);
