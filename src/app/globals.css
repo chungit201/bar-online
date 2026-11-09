@@ -1,26 +1,109 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ---- Base dark theme ---- */
+
+html,
+body {
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  background: #030712;
+  color: #e5e7eb;
+  font-family: system-ui, -apple-system, sans-serif;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/* ---- Custom scrollbar ---- */
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 3px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* ---- Neon glow effects ---- */
+
+.shadow-neon {
+  box-shadow: 0 0 15px rgba(168, 85, 247, 0.15), 0 0 45px rgba(168, 85, 247, 0.05);
+}
+
+.neon-text {
+  text-shadow: 0 0 10px rgba(168, 85, 247, 0.5), 0 0 40px rgba(168, 85, 247, 0.2);
+}
+
+.neon-border {
+  box-shadow: inset 0 0 8px rgba(168, 85, 247, 0.1), 0 0 8px rgba(168, 85, 247, 0.1);
+}
+
+/* ---- Action buttons ---- */
+
+.action-btn {
+  background: rgba(17, 24, 39, 0.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid #374151;
+  color: #e5e7eb;
+  font-size: 0.875rem;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border-radius: 0.75rem;
+  transition: all 0.15s ease;
+}
+.action-btn:hover {
+  background: rgba(31, 41, 55, 0.9);
+  border-color: #a855f7;
+  box-shadow: 0 0 12px rgba(168, 85, 247, 0.25);
+}
+
+/* ---- Club-themed animations ---- */
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 10px rgba(168, 85, 247, 0.2); }
+  50% { box-shadow: 0 0 25px rgba(168, 85, 247, 0.4); }
+}
+
+@keyframes neon-flicker {
+  0%, 19%, 21%, 23%, 25%, 54%, 56%, 100% {
+    text-shadow: 0 0 10px rgba(168, 85, 247, 0.6), 0 0 40px rgba(168, 85, 247, 0.3);
+  }
+  20%, 24%, 55% {
+    text-shadow: none;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@keyframes color-cycle {
+  0% { color: #a855f7; }
+  33% { color: #ec4899; }
+  66% { color: #3b82f6; }
+  100% { color: #a855f7; }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.animate-neon-flicker {
+  animation: neon-flicker 3s infinite;
+}
+
+.animate-color-cycle {
+  animation: color-cycle 6s linear infinite;
+}
+
+/* ---- Floating emoji reaction ---- */
+
+@keyframes float-up {
+  0% { opacity: 1; transform: translateY(0) scale(1); }
+  50% { opacity: 1; transform: translateY(-120px) scale(1.2); }
+  100% { opacity: 0; transform: translateY(-250px) scale(0.8); }
+}
+
+.animate-float-up {
+  animation: float-up 2.5s ease-out forwards;
 }

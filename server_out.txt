@@ -1,0 +1,1 @@
+✓ Running next.config.ts took 43ms
