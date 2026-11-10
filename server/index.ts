@@ -818,7 +818,12 @@ io.on('connection', (socket) => {
 
     room.musicQueue.tracks.push(track);
     if (room.musicQueue.currentIndex === -1) {
-      room.musicQueue.currentIndex = 0;
+      // The track just pushed, not slot 0. Hardcoding 0 assumed the queue was
+      // empty, but it is also idle once everything in it has been played — and
+      // then this pointed the room at the first *finished* song while
+      // `currentSong` named the new one, so the two disagreed.
+      room.musicQueue.currentIndex = room.musicQueue.tracks.length - 1;
+      room.musicQueue.positionSeconds = 0;
       room.musicQueue.isPlaying = true;
       room.currentSong = track;
       io.to(roomId).emit('music:nowPlaying', track);
@@ -834,8 +839,28 @@ io.on('connection', (socket) => {
     const room = rooms.get(roomId);
     if (!room) return;
 
-    room.musicQueue.tracks = room.musicQueue.tracks.filter((t) => t.id !== data.trackId);
-    io.to(roomId).emit('music:queueUpdated', room.musicQueue);
+    // Removing a track moves everything after it down one slot, so the
+    // "currently playing" pointer has to move with it. Filtering the list and
+    // leaving the index alone silently switched the room to a different song.
+    const q = room.musicQueue;
+    const idx = q.tracks.findIndex((t) => t.id === data.trackId);
+    if (idx === -1) return;
+
+    q.tracks.splice(idx, 1);
+
+    if (idx < q.currentIndex) {
+      q.currentIndex--;
+    } else if (idx === q.currentIndex) {
+      // The song playing was the one removed. Whatever slid into its slot
+      // takes over; if nothing did, the queue has run out.
+      if (q.currentIndex >= q.tracks.length) q.currentIndex = -1;
+      q.positionSeconds = 0;
+      q.isPlaying = q.currentIndex !== -1;
+      room.currentSong = q.currentIndex === -1 ? null : q.tracks[q.currentIndex];
+      io.to(roomId).emit('music:nowPlaying', room.currentSong);
+    }
+
+    io.to(roomId).emit('music:queueUpdated', q);
   });
 
   socket.on('music:skip', () => {
@@ -851,6 +876,15 @@ io.on('connection', (socket) => {
       room.currentSong = room.musicQueue.tracks[room.musicQueue.currentIndex];
       io.to(roomId).emit('music:nowPlaying', room.currentSong);
     } else {
+      // Nothing left to play, so let go of the track entirely.
+      //
+      // This used to leave currentIndex pointing at the song that just
+      // finished, which broke the room in two ways: clients derive the stage
+      // video from `tracks[currentIndex]`, so the LED wall sat frozen on the
+      // finished video, and `music:addTrack` only starts playback when the
+      // index is -1 — so adding a song to replace it did nothing at all.
+      room.musicQueue.currentIndex = -1;
+      room.musicQueue.positionSeconds = 0;
       room.musicQueue.isPlaying = false;
       room.currentSong = null;
       io.to(roomId).emit('music:nowPlaying', null);

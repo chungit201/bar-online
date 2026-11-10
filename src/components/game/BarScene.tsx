@@ -1520,7 +1520,11 @@ function LedWall({
 function SpotBeam({
   position,
   color,
-  length = 7,
+  // Reach the floor from wherever the lamp is hung. This was a flat 7, sized
+  // by hand for a 7.6-high mount; raising the ceiling to 11 left every beam
+  // stopping 3.5 units short, hanging in mid-air over the dance floor.
+  // Deriving it from the mount height means the rig can move again freely.
+  length = position[1],
   spread = 0.9,
   speed = 0.5,
   phase = 0,
