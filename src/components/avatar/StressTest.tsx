@@ -15,7 +15,7 @@ import { DANCE_CLIPS, getClip } from './dances';
 // ---------------------------------------------------------------------------
 
 export const STRESS_TEST = false;
-export const STRESS_COUNT = 50;
+export const STRESS_COUNT = 500;
 export const INSTANCED = true;
 
 export interface PerfSample {
