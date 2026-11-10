@@ -194,7 +194,14 @@ export interface TikTokGifter {
   nickname: string;
   avatarUrl: string;
   diamonds: number;
+  /** Name of the most recent gift this viewer sent */
+  lastGift: string;
+  /** TikTok artwork URL for that gift, empty when TikTok didn't send one */
+  lastGiftIcon: string;
 }
+
+/** Real TikTok artwork for the gifts that have a rule, keyed by gift kind */
+export type TikTokGiftIcons = Partial<Record<'rose' | 'rosa' | 'tiktok', string>>;
 
 /** A TikTok viewer currently shown as a character on the floor */
 export interface TikTokViewer {
@@ -214,10 +221,14 @@ export interface TikTokViewer {
  * camera around.
  */
 export interface TikTokAction {
-  kind: 'focus' | 'skin' | 'jump';
+  kind: 'focus' | 'skin' | 'jump' | 'bar';
   userId: string;
   nickname: string;
   at: number;
+  /** Running like total for this viewer, sent with like-driven actions */
+  likes?: number;
+  /** Set when a gift caused this action, which earns the viewer a title */
+  fromGift?: boolean;
 }
 
 export interface TikTokStatus {
@@ -272,6 +283,7 @@ export interface ServerToClientEvents {
   'tiktok:status': (status: TikTokStatus) => void;
   'tiktok:leaderboard': (top: TikTokGifter[]) => void;
   'tiktok:viewers': (viewers: TikTokViewer[]) => void;
+  'tiktok:giftIcons': (icons: TikTokGiftIcons) => void;
   'tiktok:action': (action: TikTokAction) => void;
 }
 

@@ -8,6 +8,7 @@ import YouTube, { type YouTubeEvent } from 'react-youtube';
 import CharacterBillboard from '@/components/avatar/CharacterBillboard';
 import DanceSprite from '@/components/avatar/DanceSprite';
 import NameTag from '@/components/avatar/NameTag';
+import TitleBadge, { STAGE_TITLES } from '@/components/avatar/TitleBadge';
 import { getClip } from '@/components/avatar/dances';
 import type { TikTokGifter } from '@/types';
 
@@ -1295,23 +1296,25 @@ function StagePerformer({
   name,
   phase,
   avatarUrl,
+  title,
 }: {
   position: [number, number, number];
   clipId: string;
   name: string;
   phase: number;
   avatarUrl?: string;
+  /** Title banner slug; each slot carries its rank's title */
+  title?: string;
 }) {
   return (
     <group position={position}>
       {/* No extra sway here — the clip already carries the motion */}
       <DanceSprite clip={getClip(clipId)} height={PERFORMER_H} phase={phase} />
+      {title && <TitleBadge slug={title} position={[0, PERFORMER_H + 0.55, 0]} width={1.6} />}
       <NameTag
         text={name}
         position={[0, PERFORMER_H + 0.3, 0]}
-        fontSize={0.13}
-        color="#f7e7b0"
-        fancy
+        fontSize={0.12}
         avatarUrl={avatarUrl}
       />
     </group>
@@ -1346,6 +1349,7 @@ function StagePerformers({
             clipId={(guest && skins[guest.userId]) || slot.clip}
             name={guest ? guest.nickname : slot.name}
             avatarUrl={guest?.avatarUrl}
+            title={STAGE_TITLES[i]}
             phase={slot.phase}
           />
         );

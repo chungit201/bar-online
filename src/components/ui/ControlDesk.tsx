@@ -143,8 +143,13 @@ export default function ControlDesk({
                     <span className="min-w-0 flex-1 truncate text-sm text-white">
                       {g.nickname}
                     </span>
-                    <span className="shrink-0 font-mono text-xs text-zinc-500">
-                      {g.diamonds.toLocaleString()} 💎
+                    <span className="flex shrink-0 items-center gap-1 text-xs text-zinc-500">
+                      {g.lastGiftIcon && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={g.lastGiftIcon} alt="" className="h-4 w-4 object-contain" />
+                      )}
+                      {g.lastGift && <span className="text-zinc-400">{g.lastGift}</span>}
+                      <span className="font-mono">{g.diamonds.toLocaleString()} 🪙</span>
                     </span>
                   </li>
                 ))}

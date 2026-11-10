@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { TikTokStatus } from '@/types';
+import type { TikTokGiftIcons, TikTokStatus } from '@/types';
 import GiftRules from './GiftRules';
 
 /**
@@ -13,8 +13,10 @@ export default function TikTokPanel({
   onConnect,
   onDisconnect,
   onClose,
+  giftIcons,
 }: {
   status: TikTokStatus | null;
+  giftIcons?: TikTokGiftIcons;
   onConnect: (username: string) => void;
   onDisconnect: () => void;
   onClose: () => void;
@@ -98,7 +100,7 @@ export default function TikTokPanel({
         <p className="mb-2 text-[11px] font-semibold text-pink-200/80">
           Quà tặng và hiệu ứng
         </p>
-        <GiftRules compact />
+        <GiftRules compact icons={giftIcons} />
       </div>
 
       <p className="mt-3 text-[11px] leading-relaxed text-white/35">

@@ -33,9 +33,12 @@ export interface TikTokHandlers {
     nickname: string;
     avatarUrl: string;
     giftName: string;
+    giftIcon: string;
     count: number;
     diamonds: number;
   }) => void;
+  /** Every gift the channel offers, fetched once per connect */
+  onGiftCatalog: (gifts: { name: string; icon: string }[]) => void;
   onSocial: (data: { nickname: string; kind: 'follow' | 'share' }) => void;
   onMember: (data: { userId: string; nickname: string; avatarUrl: string }) => void;
 }
@@ -158,6 +161,18 @@ function avatar(data: any): string {
   );
 }
 
+/** Gift artwork; the live proto uses camelCase, the gift list REST API snake_case */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function giftIcon(g: any): string {
+  return String(
+    g?.image?.urlList?.[0] ||
+      g?.image?.url_list?.[0] ||
+      g?.icon?.urlList?.[0] ||
+      g?.icon?.url_list?.[0] ||
+      '',
+  );
+}
+
 export function createTikTokBridge() {
   const links = new Map<string, RoomLink>();
 
@@ -244,6 +259,7 @@ export function createTikTokBridge() {
         avatarUrl: avatar(data),
         nickname: nick(data),
         giftName: String(data?.gift?.name || 'Quà'),
+        giftIcon: giftIcon(data?.gift),
         count: fresh,
         diamonds: Number(data?.gift?.diamondCount || 0) * fresh,
       });
@@ -366,6 +382,16 @@ export function createTikTokBridge() {
       if (links.get(roomId) !== link) return;
       link.attempt = 0;
       publish(link, { connected: true, connecting: false, lastError: null });
+      conn
+        .fetchAvailableGifts()
+        .then((list) => {
+          if (links.get(roomId) !== link || !Array.isArray(list)) return;
+          link.handlers.onGiftCatalog(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            list.map((g: any) => ({ name: String(g?.name ?? ''), icon: giftIcon(g) })),
+          );
+        })
+        .catch(() => {});
     } catch (err) {
       if (links.get(roomId) !== link) return;
       publish(link, {

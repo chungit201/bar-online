@@ -31,7 +31,13 @@ export default function CameraRig({
   smoothing = 2.4,
   onUserInteract,
   onFocusStart,
+  focusMs = FOCUS_MS,
+  focusFollow,
 }: {
+  /** How long this focus holds */
+  focusMs?: number;
+  /** Live pose for a moving subject; wins over `focusPose` while it returns one */
+  focusFollow?: (() => CameraPose | null) | null;
   pose: CameraPose;
   /**
    * User is steering by hand, so leave the camera alone. Owned by the parent
@@ -88,12 +94,13 @@ export default function CameraRig({
       onFocusStart?.();
     }
 
-    const holding = focusPose && now - focusStart.current < FOCUS_MS;
+    const focus = focusFollow?.() ?? focusPose;
+    const holding = focus && now - focusStart.current < focusMs;
     // An arrival is an app-driven event the player should see, so it takes the
     // camera back even while the user is free-looking.
     if (grabbed.current || (freeLook && !holding)) return;
 
-    const active = holding ? focusPose : pose;
+    const active = holding ? focus : pose;
     wantPos.current.set(...active.position);
     wantTarget.current.set(...active.target);
 

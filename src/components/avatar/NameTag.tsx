@@ -97,7 +97,10 @@ export default function NameTag({
   color = '#ffffff',
   fancy = false,
   avatarUrl,
+  likes = 0,
 }: {
+  /** TikTok likes from this person, shown as "name - ♥ xN" when above zero */
+  likes?: number;
   text: string;
   position: [number, number, number];
   fontSize?: number;
@@ -116,6 +119,12 @@ export default function NameTag({
   const avatar = useAvatarTexture(avatarUrl);
   const avatarRef = useRef<THREE.Mesh>(null);
   const avatarSize = fontSize * 1.9;
+
+  const prefix = `${text} - `;
+  const label = likes > 0 ? `${prefix}♥ x${likes}` : text;
+  // Only the heart is red; the count goes back to the label colour
+  const colorRanges =
+    likes > 0 ? { 0: color, [prefix.length]: '#ff2d55', [prefix.length + 1]: color } : undefined;
 
   const applyMeasured = (mesh: THREE.Mesh | null) => {
     if (mesh && measured.current) {
@@ -183,6 +192,8 @@ export default function NameTag({
         anchorY="middle"
         outlineWidth={fancy ? 0.01 : 0.006}
         outlineColor="#000000"
+        // troika supports colorRanges; drei forwards it but leaves it untyped
+        {...({ colorRanges } as object)}
         onSync={(troika) => {
           const bounds = (
             troika as unknown as { textRenderInfo?: { blockBounds?: number[] } }
@@ -210,7 +221,7 @@ export default function NameTag({
           }
         }}
       >
-        {text}
+        {label}
       </Text>
     </Billboard>
   );

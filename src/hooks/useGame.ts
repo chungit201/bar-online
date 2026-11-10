@@ -18,6 +18,7 @@ import type {
   TikTokGifter,
   TikTokAction,
   TikTokViewer,
+  TikTokGiftIcons,
 } from '@/types';
 import { DANCE_CLIPS } from '@/components/avatar/dances';
 
@@ -52,6 +53,13 @@ interface GameState {
   tiktokViewers: TikTokViewer[];
   /** TikTok userId -> timestamp of their latest like, which makes them hop */
   tiktokJumps: Record<string, number>;
+  /** TikTok userId -> timestamp of their latest rose, which sends them to the bar */
+  tiktokBarVisits: Record<string, number>;
+  tiktokGiftIcons: TikTokGiftIcons;
+  /** TikTok userId -> likes they have sent this session */
+  tiktokLikes: Record<string, number>;
+  /** TikTok userIds that have sent at least one gift this session */
+  tiktokGifters: Record<string, true>;
 }
 
 const initialState: GameState = {
@@ -75,6 +83,10 @@ const initialState: GameState = {
   tiktokSkins: {},
   tiktokViewers: [],
   tiktokJumps: {},
+  tiktokBarVisits: {},
+  tiktokGiftIcons: {},
+  tiktokLikes: {},
+  tiktokGifters: {},
 };
 
 // ---------------------------------------------------------------------------
@@ -101,6 +113,7 @@ type Action =
   | { type: 'TIKTOK_STATUS'; status: TikTokStatus }
   | { type: 'TIKTOK_LEADERBOARD'; top: TikTokGifter[] }
   | { type: 'TIKTOK_VIEWERS'; viewers: TikTokViewer[] }
+  | { type: 'TIKTOK_GIFT_ICONS'; icons: TikTokGiftIcons }
   | { type: 'TIKTOK_ACTION'; action: TikTokAction }
   | { type: 'TIKTOK_ACTION_CLEAR' }
   | { type: 'DRINK_MENU'; drinks: Drink[] }
@@ -223,20 +236,43 @@ function reducer(state: GameState, action: Action): GameState {
     case 'TIKTOK_VIEWERS':
       return { ...state, tiktokViewers: action.viewers };
 
+    case 'TIKTOK_GIFT_ICONS':
+      return { ...state, tiktokGiftIcons: action.icons };
+
     case 'TIKTOK_ACTION': {
+      // Any gift earns the sender a title banner over their character
+      const a = action.action;
+      const base =
+        a.fromGift && !state.tiktokGifters[a.userId]
+          ? { ...state, tiktokGifters: { ...state.tiktokGifters, [a.userId]: true as const } }
+          : state;
       // A like only bounces that one character. It must not land in
       // tiktokAction, which is what the camera watches for.
       if (action.action.kind === 'jump') {
         return {
-          ...state,
+          ...base,
           tiktokJumps: {
             ...state.tiktokJumps,
+            [action.action.userId]: action.action.at,
+          },
+          tiktokLikes:
+            action.action.likes === undefined
+              ? state.tiktokLikes
+              : { ...state.tiktokLikes, [action.action.userId]: action.action.likes },
+        };
+      }
+      if (action.action.kind === 'bar') {
+        return {
+          ...base,
+          tiktokAction: action.action,
+          tiktokBarVisits: {
+            ...state.tiktokBarVisits,
             [action.action.userId]: action.action.at,
           },
         };
       }
       if (action.action.kind !== 'skin') {
-        return { ...state, tiktokAction: action.action };
+        return { ...base, tiktokAction: action.action };
       }
       // Advance that viewer to the next clip, so repeat gifts keep cycling
       const { userId } = action.action;
@@ -244,7 +280,7 @@ function reducer(state: GameState, action: Action): GameState {
       const at = DANCE_CLIPS.findIndex((c) => c.id === current);
       const next = DANCE_CLIPS[(at + 1) % DANCE_CLIPS.length];
       return {
-        ...state,
+        ...base,
         tiktokAction: action.action,
         tiktokSkins: { ...state.tiktokSkins, [userId]: next.id },
       };
@@ -378,6 +414,7 @@ export function useGame() {
     s.on('tiktok:status', (status) => dispatch({ type: 'TIKTOK_STATUS', status }));
     s.on('tiktok:leaderboard', (top) => dispatch({ type: 'TIKTOK_LEADERBOARD', top }));
     s.on('tiktok:viewers', (viewers) => dispatch({ type: 'TIKTOK_VIEWERS', viewers }));
+    s.on('tiktok:giftIcons', (icons) => dispatch({ type: 'TIKTOK_GIFT_ICONS', icons }));
     s.on('tiktok:action', (action) => dispatch({ type: 'TIKTOK_ACTION', action }));
     s.on('drink:menu', (drinks) => dispatch({ type: 'DRINK_MENU', drinks }));
     s.on('drink:ordered', (order) => dispatch({ type: 'DRINK_ORDERED', order }));

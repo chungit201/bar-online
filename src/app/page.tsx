@@ -23,7 +23,11 @@ import StressTest, {
 } from '@/components/avatar/StressTest';
 import FloatingReactions from '@/components/ui/FloatingReactions';
 import PlayerAvatar3D from '@/components/avatar/PlayerAvatar3D';
-import TikTokCrowd from '@/components/avatar/TikTokCrowd';
+import TikTokCrowd, {
+  BAR_ORDER_MS,
+  BAR_WALK_MS,
+  crowdLive,
+} from '@/components/avatar/TikTokCrowd';
 import type { CameraView } from '@/types';
 
 // ---------------------------------------------------------------------------
@@ -121,6 +125,10 @@ function GameView() {
     tiktokSkins,
     tiktokViewers,
     tiktokJumps,
+    tiktokBarVisits,
+    tiktokGiftIcons,
+    tiktokLikes,
+    tiktokGifters,
     connectTikTok,
     disconnectTikTok,
     clearTikTokAction,
@@ -219,7 +227,7 @@ function GameView() {
     if (!tiktokAction) return null;
 
     const rank = tiktokTop.findIndex((g) => g.userId === tiktokAction.userId);
-    if (rank >= 0) {
+    if (rank >= 0 && tiktokAction.kind !== 'bar') {
       const [sx, sy, sz] = STAGE_SLOTS[rank].pos;
       // Slots are local to the stage group, which sits at z = -12
       const z = sz - 12;
@@ -237,6 +245,19 @@ function GameView() {
   // from the ceiling, which reads fine in a wide shot — cutting to each one
   // meant a busy LIVE never settled on anything long enough to watch.
   const focusPose = giftFocusPose;
+  // A rose walks the gifter to the bar, so the camera tracks them live and
+  // holds until they have arrived and ordered.
+  const barFocus = tiktokAction?.kind === 'bar' && !!giftFocusPose;
+  const focusMs = barFocus ? BAR_WALK_MS + BAR_ORDER_MS : FOCUS_MS;
+  const focusFollow = useMemo(() => {
+    if (!barFocus || !tiktokAction) return null;
+    const id = tiktokAction.userId;
+    return (): CameraPose | null => {
+      const p = crowdLive.get(id);
+      if (!p) return null;
+      return { position: [p.x + 2.2, 2.6, p.z + 4.0], target: [p.x, 1.1, p.z] };
+    };
+  }, [barFocus, tiktokAction]);
   const focusKey = useMemo(
     () =>
       tiktokAction && giftFocusPose
@@ -303,9 +324,9 @@ function GameView() {
       setFreeLook(false);
       // Round up to the next start of the cycle, which is the centred shot
       setCineIndex((i) => Math.ceil(i / cineLength) * cineLength);
-    }, FOCUS_MS);
+    }, focusMs + 800);
     return () => clearTimeout(id);
-  }, [focusKey, cineLength, clearTikTokAction]);
+  }, [focusKey, focusMs, cineLength, clearTikTokAction]);
 
   // Cinematic auto-pan. The state update lives in the interval callback, not
   // in the effect body, so it doesn't cascade renders on mount.
@@ -810,6 +831,9 @@ function GameView() {
           viewers={tiktokViewers}
           skins={tiktokSkins}
           jumps={tiktokJumps}
+          barVisits={tiktokBarVisits}
+          likes={tiktokLikes}
+          gifters={tiktokGifters}
         />
 
         {/* The host is the streamer, not a guest — they run the room from
@@ -832,6 +856,8 @@ function GameView() {
           freeLook={freeLook}
           focusPose={focusPose}
           focusKey={focusKey}
+          focusMs={focusMs}
+          focusFollow={focusFollow}
           // Cinematic glides; a deliberate view change should feel responsive
           smoothing={cinematic ? 0.7 : 2.4}
           // A gift overrides a hand-held camera, so free-look has to go with
@@ -894,6 +920,7 @@ function GameView() {
             onConnect={connectTikTok}
             onDisconnect={disconnectTikTok}
             onClose={() => setShowTikTok(false)}
+            giftIcons={tiktokGiftIcons}
           />
         </div>
       )}

@@ -12,6 +12,7 @@ import type {
   DrinkOrder,
   RoomSummary,
   TikTokGifter,
+  TikTokGiftIcons,
   TikTokViewer,
   Vec3,
   ServerToClientEvents,
@@ -29,10 +30,18 @@ const rooms = new Map<string, Room>();
 const tiktok = createTikTokBridge();
 /** roomId -> TikTok userId -> cumulative gift value, for the stage top 3 */
 const giftLedger = new Map<string, Map<string, TikTokGifter>>();
+/** roomId -> real TikTok artwork for the gifts that have a rule */
+const giftIcons = new Map<string, TikTokGiftIcons>();
+/** roomId -> TikTok userId -> likes sent this session */
+const likeLedger = new Map<string, Map<string, { total: number; pending: number; focusedAt: number }>>();
+const LIKE_FOCUS_MIN = 5;
+const LIKE_FOCUS_COOLDOWN_MS = 15000;
 
 /** Gift names vary by locale, so match loosely on the recognisable word */
-function classifyGift(name: string): 'rose' | 'tiktok' | null {
+function classifyGift(name: string): 'rose' | 'rosa' | 'tiktok' | null {
   const n = name.toLowerCase();
+  // Rosa is a separate gift from Rose, so check it as its own word
+  if (/\brosa\b/.test(n)) return 'rosa';
   if (n.includes('rose') || n.includes('hoa hồng')) return 'rose';
   if (n.includes('tiktok')) return 'tiktok';
   return null;
@@ -280,6 +289,8 @@ function removePlayerFromRoom(
     // Drop the TikTok link too, or its reconnect timer keeps a dead room alive
     tiktok.disconnect(roomId);
     giftLedger.delete(roomId);
+    giftIcons.delete(roomId);
+    likeLedger.delete(roomId);
     viewerRegistry.delete(roomId);
     rooms.delete(roomId);
     return;
@@ -421,6 +432,7 @@ io.on('connection', (socket) => {
     socket.emit('tiktok:status', tiktok.getStatus(room.id));
     socket.emit('tiktok:leaderboard', topGifters(room.id));
     socket.emit('tiktok:viewers', visibleViewers(room.id));
+    socket.emit('tiktok:giftIcons', giftIcons.get(room.id) ?? {});
     socket.to(room.id).emit('room:playerJoined', player);
   });
 
@@ -783,6 +795,16 @@ io.on('connection', (socket) => {
     tiktok.connect(roomId, data.username, {
       onStatus: (status) => io.to(roomId).emit('tiktok:status', status),
 
+      onGiftCatalog: (gifts) => {
+        const icons: TikTokGiftIcons = { ...giftIcons.get(roomId) };
+        for (const { name, icon } of gifts) {
+          const kind = classifyGift(name);
+          if (kind && icon && !icons[kind]) icons[kind] = icon;
+        }
+        giftIcons.set(roomId, icons);
+        io.to(roomId).emit('tiktok:giftIcons', icons);
+      },
+
       onChat: ({ userId, nickname, avatarUrl, comment }) => {
         if (touchViewer(roomId, userId, nickname, avatarUrl)) {
           io.to(roomId).emit('tiktok:viewers', visibleViewers(roomId));
@@ -800,7 +822,7 @@ io.on('connection', (socket) => {
         io.to(roomId).emit('chat:message', message);
       },
 
-      onLike: ({ userId, nickname, avatarUrl }) => {
+      onLike: ({ userId, nickname, avatarUrl, count }) => {
         if (touchViewer(roomId, userId, nickname, avatarUrl)) {
           io.to(roomId).emit('tiktok:viewers', visibleViewers(roomId));
         }
@@ -809,21 +831,35 @@ io.on('connection', (socket) => {
           playerName: nickname,
           reaction: 'heart',
         });
-        // A like makes their character hop. Deliberately not a 'focus': likes
-        // arrive in bursts and would leave the camera jumping between people.
-        io.to(roomId).emit('tiktok:action', {
-          kind: 'jump',
-          userId,
-          nickname,
-          at: Date.now(),
-        });
+
+        let likes = likeLedger.get(roomId);
+        if (!likes) {
+          likes = new Map();
+          likeLedger.set(roomId, likes);
+        }
+        const entry = likes.get(userId) ?? { total: 0, pending: 0, focusedAt: 0 };
+        entry.total += count;
+        entry.pending += count;
+        likes.set(userId, entry);
+
+        const now = Date.now();
+        io.to(roomId).emit('tiktok:action', { kind: 'jump', userId, nickname, at: now, likes: entry.total });
+
+        // Counted across messages: TikTok splits ordinary tapping into many
+        // small like messages, so a per-message threshold almost never fires.
+        // The cooldown stops one busy tapper from holding the camera.
+        if (entry.pending >= LIKE_FOCUS_MIN && now - entry.focusedAt > LIKE_FOCUS_COOLDOWN_MS) {
+          entry.pending = 0;
+          entry.focusedAt = now;
+          io.to(roomId).emit('tiktok:action', { kind: 'focus', userId, nickname, at: now, likes: entry.total });
+        }
       },
 
-      onGift: ({ userId, nickname, avatarUrl, giftName, count, diamonds }) => {
+      onGift: ({ userId, nickname, avatarUrl, giftName, giftIcon, count, diamonds }) => {
         if (touchViewer(roomId, userId, nickname, avatarUrl)) {
           io.to(roomId).emit('tiktok:viewers', visibleViewers(roomId));
         }
-        say(`🎁 ${nickname} tặng ${giftName} x${count}${diamonds ? ` (${diamonds} 💎)` : ''}`);
+        say(`🎁 ${nickname} tặng ${giftName} x${count}${diamonds ? ` (${diamonds} 🪙)` : ''}`);
         io.to(roomId).emit('chat:reaction', {
           playerId: `tiktok:${nickname}`,
           playerName: nickname,
@@ -844,17 +880,22 @@ io.on('connection', (socket) => {
           // Keep the last non-empty avatar; some messages omit it
           avatarUrl: avatarUrl || prev?.avatarUrl || '',
           diamonds: (prev?.diamonds ?? 0) + Math.max(diamonds, count),
+          lastGift: giftName,
+          lastGiftIcon: giftIcon,
         });
         io.to(roomId).emit('tiktok:leaderboard', topGifters(roomId));
 
         // Every gift points the camera at whoever sent it. `kind` only says
         // whether this gift ALSO swaps their character — the client focuses on
         // any action regardless of kind.
+        const giftKind = classifyGift(giftName);
+        if (giftKind === 'rosa') say(`🍸 ${nickname} ra quầy bar order rượu`);
         io.to(roomId).emit('tiktok:action', {
-          kind: classifyGift(giftName) === 'tiktok' ? 'skin' : 'focus',
+          kind: giftKind === 'tiktok' ? 'skin' : giftKind === 'rosa' ? 'bar' : 'focus',
           userId,
           nickname,
           at: Date.now(),
+          fromGift: true,
         });
       },
 
