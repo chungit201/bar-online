@@ -1,25 +1,16 @@
 'use client';
 
 import type { TikTokGiftIcons } from '@/types';
+import { EXTRA_RULES, GIFT_RULES } from './giftRuleTable';
 
 /**
  * What each gift does in the bar. Shown in the lobby settings and in the
  * in-room TikTok panel, so viewers and hosts see the same rules.
  *
- * Keep in sync with classifyGift() and the onGift handler in server/index.ts.
+ * The table itself lives in ./giftRuleTable so the broadcast overlay can show the
+ * same gifts without duplicating the list.
  */
-const RULES: {
-  kind?: keyof TikTokGiftIcons;
-  fallback: string;
-  gift: string;
-  effect: string;
-}[] = [
-  { kind: 'rose', fallback: '🌹', gift: 'Hoa hồng', effect: 'Camera lia vào người tặng trên sân khấu' },
-  { kind: 'rosa', fallback: '💐', gift: 'Rosa', effect: 'Người tặng ra quầy bar order rượu, camera đi theo' },
-  { kind: 'tiktok', fallback: '🎵', gift: 'TikTok', effect: 'Đổi nhân vật cho người tặng' },
-  { fallback: '❤️', gift: 'Tim x5+', effect: 'Camera lia vào người thả tim · Hiện số tim cạnh tên' },
-  { fallback: '🎁', gift: 'Mọi quà', effect: 'Camera lia vào người tặng · Tích điểm, Top 3 lên sân khấu, Top 1 đứng giữa' },
-];
+const RULES = [...GIFT_RULES, ...EXTRA_RULES];
 
 export default function GiftRules({
   compact = false,
@@ -42,6 +33,11 @@ export default function GiftRules({
               <span className="shrink-0 text-sm leading-none">{r.fallback}</span>
             )}
             <span className="shrink-0 font-medium text-white/80">{r.gift}</span>
+            {/* 🪙 to match the leaderboard in ControlDesk and the chat line the
+                server posts — one currency symbol across the whole app */}
+            {r.cost !== undefined && (
+              <span className="shrink-0 font-mono text-[10px] text-amber-300/70">{r.cost} 🪙</span>
+            )}
             <span className="text-white/40">·</span>
             <span className="text-white/50">{r.effect}</span>
           </div>

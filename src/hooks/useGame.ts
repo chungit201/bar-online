@@ -19,6 +19,7 @@ import type {
   TikTokAction,
   TikTokViewer,
   TikTokGiftIcons,
+  TikTokGiftCounts,
 } from '@/types';
 import { DANCE_CLIPS } from '@/components/avatar/dances';
 
@@ -56,10 +57,19 @@ interface GameState {
   /** TikTok userId -> timestamp of their latest rose, which sends them to the bar */
   tiktokBarVisits: Record<string, number>;
   tiktokGiftIcons: TikTokGiftIcons;
+  tiktokGiftCounts: TikTokGiftCounts;
   /** TikTok userId -> likes they have sent this session */
   tiktokLikes: Record<string, number>;
   /** TikTok userIds that have sent at least one gift this session */
   tiktokGifters: Record<string, true>;
+  /**
+   * Latest gift that fires a scene effect.
+   *
+   * Separate from `tiktokAction` because the two have different lifetimes: the
+   * camera releases its subject after a few seconds, while an effect like
+   * Galaxy runs on its own clock. Components read `at` and expire themselves.
+   */
+  tiktokEffect: TikTokAction | null;
 }
 
 const initialState: GameState = {
@@ -85,8 +95,10 @@ const initialState: GameState = {
   tiktokJumps: {},
   tiktokBarVisits: {},
   tiktokGiftIcons: {},
+  tiktokGiftCounts: {},
   tiktokLikes: {},
   tiktokGifters: {},
+  tiktokEffect: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -114,6 +126,7 @@ type Action =
   | { type: 'TIKTOK_LEADERBOARD'; top: TikTokGifter[] }
   | { type: 'TIKTOK_VIEWERS'; viewers: TikTokViewer[] }
   | { type: 'TIKTOK_GIFT_ICONS'; icons: TikTokGiftIcons }
+  | { type: 'TIKTOK_GIFT_COUNTS'; counts: TikTokGiftCounts }
   | { type: 'TIKTOK_ACTION'; action: TikTokAction }
   | { type: 'TIKTOK_ACTION_CLEAR' }
   | { type: 'DRINK_MENU'; drinks: Drink[] }
@@ -239,13 +252,24 @@ function reducer(state: GameState, action: Action): GameState {
     case 'TIKTOK_GIFT_ICONS':
       return { ...state, tiktokGiftIcons: action.icons };
 
+    case 'TIKTOK_GIFT_COUNTS':
+      return { ...state, tiktokGiftCounts: action.counts };
+
     case 'TIKTOK_ACTION': {
       // Any gift earns the sender a title banner over their character
       const a = action.action;
-      const base =
+      const titled =
         a.fromGift && !state.tiktokGifters[a.userId]
           ? { ...state, tiktokGifters: { ...state.tiktokGifters, [a.userId]: true as const } }
           : state;
+      // Arm the scene effect here, once, so every branch below carries it —
+      // including 'skin' and 'bar', which return early.
+      const base = a.effect ? { ...titled, tiktokEffect: a } : titled;
+      // The server throttles how often the camera may cut. When it says no,
+      // everything else still happens — the skin swaps, the walk to the bar
+      // starts, the effect fires — only `tiktokAction` is withheld, because
+      // that is the single thing the camera rig watches.
+      const camera = a.camera !== false;
       // A like only bounces that one character. It must not land in
       // tiktokAction, which is what the camera watches for.
       if (action.action.kind === 'jump') {
@@ -264,7 +288,7 @@ function reducer(state: GameState, action: Action): GameState {
       if (action.action.kind === 'bar') {
         return {
           ...base,
-          tiktokAction: action.action,
+          tiktokAction: camera ? action.action : state.tiktokAction,
           tiktokBarVisits: {
             ...state.tiktokBarVisits,
             [action.action.userId]: action.action.at,
@@ -272,7 +296,7 @@ function reducer(state: GameState, action: Action): GameState {
         };
       }
       if (action.action.kind !== 'skin') {
-        return { ...base, tiktokAction: action.action };
+        return camera ? { ...base, tiktokAction: action.action } : base;
       }
       // Advance that viewer to the next clip, so repeat gifts keep cycling
       const { userId } = action.action;
@@ -281,7 +305,7 @@ function reducer(state: GameState, action: Action): GameState {
       const next = DANCE_CLIPS[(at + 1) % DANCE_CLIPS.length];
       return {
         ...base,
-        tiktokAction: action.action,
+        tiktokAction: camera ? action.action : state.tiktokAction,
         tiktokSkins: { ...state.tiktokSkins, [userId]: next.id },
       };
     }
@@ -415,6 +439,7 @@ export function useGame() {
     s.on('tiktok:leaderboard', (top) => dispatch({ type: 'TIKTOK_LEADERBOARD', top }));
     s.on('tiktok:viewers', (viewers) => dispatch({ type: 'TIKTOK_VIEWERS', viewers }));
     s.on('tiktok:giftIcons', (icons) => dispatch({ type: 'TIKTOK_GIFT_ICONS', icons }));
+    s.on('tiktok:giftCounts', (counts) => dispatch({ type: 'TIKTOK_GIFT_COUNTS', counts }));
     s.on('tiktok:action', (action) => dispatch({ type: 'TIKTOK_ACTION', action }));
     s.on('drink:menu', (drinks) => dispatch({ type: 'DRINK_MENU', drinks }));
     s.on('drink:ordered', (order) => dispatch({ type: 'DRINK_ORDERED', order }));

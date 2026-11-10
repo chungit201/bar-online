@@ -94,12 +94,32 @@ export default function DanceSprite({
 
   if (!frames) return <>{fallback}</>;
 
-  const width = height * (clip.width / clip.height);
+  // `height` is the height of the *character*, not of the PNG. The canvas has
+  // to be scaled up by however much of it the character fails to fill, or
+  // clips with generous padding render visibly shorter than tightly cropped
+  // ones — which is what made the crowd look so uneven.
+  const trim = clip.trim;
+  const fill = trim ? trim.bottom - trim.top : 1;
+  // `scale` pulls cropped portraits back down — see the field's note in dances.ts
+  const planeH = (height * (clip.scale ?? 1)) / fill;
+  const planeW = planeH * (clip.width / clip.height);
+
+  // Plant the feet on y = 0 and centre the body on x = 0, using the measured
+  // box rather than the canvas, so padding can't shift a dancer off their spot
+  // or leave them hovering.
+  const bottom = trim ? trim.bottom : 1;
+  const centreX = trim ? (trim.left + trim.right) / 2 : 0.5;
+  const offsetY = planeH * (bottom - 0.5);
+  const offsetX = planeW * (0.5 - centreX);
 
   return (
-    <Billboard position={[0, height / 2, 0]}>
-      <mesh>
-        <planeGeometry args={[width, height]} />
+    // The horizontal shift goes on the mesh, inside the billboard, so it
+    // travels along the sprite's own right axis as it turns to face the
+    // camera. On the Billboard itself it would stay locked to world X and
+    // slide the character sideways as the camera orbits.
+    <Billboard position={[0, offsetY, 0]}>
+      <mesh position={[offsetX, 0, 0]}>
+        <planeGeometry args={[planeW, planeH]} />
         <meshBasicMaterial
           ref={matRef}
           map={frames[0]}

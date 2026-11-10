@@ -13,12 +13,16 @@ import type {
   RoomSummary,
   TikTokGifter,
   TikTokGiftIcons,
+  TikTokGiftCounts,
+  TikTokGiftKind,
+  TikTokEffect,
+  TikTokAction,
   TikTokViewer,
   Vec3,
   ServerToClientEvents,
   ClientToServerEvents,
 } from '../src/types';
-import { createTikTokBridge } from './tiktok';
+import { createTikTokBridge, getGiftCatalog, type CatalogGift } from './tiktok';
 
 const port = parseInt(process.env.SOCKET_PORT || '3001', 10);
 
@@ -32,19 +36,127 @@ const tiktok = createTikTokBridge();
 const giftLedger = new Map<string, Map<string, TikTokGifter>>();
 /** roomId -> real TikTok artwork for the gifts that have a rule */
 const giftIcons = new Map<string, TikTokGiftIcons>();
+/**
+ * Artwork from the global catalog, which needs no connected channel. Rooms
+ * start from this so the gift rules show real icons immediately instead of
+ * falling back to emoji until someone links a TikTok LIVE.
+ */
+let baseGiftIcons: TikTokGiftIcons = {};
+/** roomId -> how many of each ruled gift arrived this session */
+const giftCounts = new Map<string, TikTokGiftCounts>();
 /** roomId -> TikTok userId -> likes sent this session */
 const likeLedger = new Map<string, Map<string, { total: number; pending: number; focusedAt: number }>>();
 const LIKE_FOCUS_MIN = 5;
 const LIKE_FOCUS_COOLDOWN_MS = 15000;
 
-/** Gift names vary by locale, so match loosely on the recognisable word */
-function classifyGift(name: string): 'rose' | 'rosa' | 'tiktok' | null {
-  const n = name.toLowerCase();
-  // Rosa is a separate gift from Rose, so check it as its own word
-  if (/\brosa\b/.test(n)) return 'rosa';
-  if (n.includes('rose') || n.includes('hoa hồng')) return 'rose';
-  if (n.includes('tiktok')) return 'tiktok';
-  return null;
+/**
+ * Floor on how often the camera may leave the cinematic pan.
+ *
+ * On a busy LIVE a gift or a burst of likes lands every few seconds, and
+ * without this the camera never did anything but cut between senders and the
+ * three on stage — the room itself was never on screen. The gifts still fire
+ * their effects and still swap skins while this gate is closed; only the shot
+ * is left alone.
+ */
+const FOCUS_MIN_GAP_MS = 20000;
+/** A gift this big always gets its cut, however recently the camera moved */
+const FOCUS_ALWAYS_DIAMONDS = 100;
+/** roomId -> when the camera last cut to someone */
+const lastFocusAt = new Map<string, number>();
+
+/**
+ * Claim the camera, or report that it is busy. Claiming moves the clock on, so
+ * two gifts in the same second cannot both take the shot.
+ */
+function claimFocus(roomId: string, force = false): boolean {
+  const now = Date.now();
+  if (!force && now - (lastFocusAt.get(roomId) ?? 0) < FOCUS_MIN_GAP_MS) return false;
+  lastFocusAt.set(roomId, now);
+  return true;
+}
+
+/**
+ * What each gift does in the bar.
+ *
+ * One row per gift, ordered cheapest first — which is also the order they are
+ * matched in, so a cheap everyday gift always wins over an expensive one whose
+ * name happens to contain it ("Rose" before "Rose Bear").
+ *
+ * `match` is a regex rather than an exact name because TikTok localises gift
+ * names: the same gift reaches us as "Rose" or "Hoa hồng" depending on the
+ * viewer. `icon` names the slot in TikTokGiftIcons, and is only set for the
+ * gifts the rules panel lists.
+ *
+ * To change what a gift does, edit its row. Nothing else needs to know.
+ */
+const GIFT_RULES: {
+  id: string;
+  match: RegExp;
+  /** Camera intent */
+  kind: TikTokAction['kind'];
+  effect?: TikTokEffect;
+  icon?: keyof TikTokGiftIcons;
+  /** Line posted to chat; `{name}` is replaced with the sender */
+  say?: string;
+}[] = [
+  // Rosa before Rose: "Rosa" contains no "rose", but keeping the pair adjacent
+  // makes the distinction obvious to whoever edits this next.
+  { id: 'rosa', match: /\brosa\b/i, kind: 'bar', icon: 'rosa', say: '🍸 {name} ra quầy bar order rượu' },
+  { id: 'tiktok', match: /\btiktok\b/i, kind: 'skin', effect: 'skin', icon: 'tiktok' },
+  { id: 'rose', match: /\brose\b|hoa hồng/i, kind: 'focus', icon: 'rose' },
+  { id: 'gg', match: /^gg$/i, kind: 'focus', effect: 'crowdJump', icon: 'gg', say: '🙌 {name} hô GG — cả sàn quẩy!' },
+  { id: 'heart', match: /finger heart|^heart$|trái tim/i, kind: 'focus', effect: 'hearts', icon: 'heart' },
+  { id: 'perfume', match: /perfume|nước hoa/i, kind: 'focus', effect: 'floorWash', icon: 'perfume', say: '💜 {name} xịt nước hoa — sàn đổi màu' },
+  { id: 'doughnut', match: /doughnut|donut|bánh rán/i, kind: 'focus', effect: 'giant', icon: 'doughnut', say: '🍩 {name} ăn bánh rán và phình to!' },
+  { id: 'confetti', match: /confetti|pháo giấy/i, kind: 'focus', effect: 'confetti', icon: 'confetti', say: '🎉 {name} bắn pháo giấy!' },
+  { id: 'money', match: /money gun|súng tiền/i, kind: 'focus', effect: 'moneyRain', icon: 'money', say: '💸 {name} bắn súng tiền!' },
+  { id: 'galaxy', match: /galaxy|thiên hà/i, kind: 'focus', effect: 'galaxy', icon: 'galaxy', say: '🌌 {name} mở GALAXY MODE!' },
+];
+
+function ruleForGift(name: string) {
+  return GIFT_RULES.find((r) => r.match.test(name)) ?? null;
+}
+
+/** Which icon slot a gift name belongs to, for the rules panel artwork */
+function classifyGift(name: string): keyof TikTokGiftIcons | null {
+  return ruleForGift(name)?.icon ?? null;
+}
+
+/**
+ * Pick the artwork for each gift that has a rule.
+ *
+ * The catalog holds every gift TikTok offers and classifyGift matches loosely
+ * — "Rosa Nebula" and "Rose Bear" both pass it — so the gift actually *named*
+ * after the rule is taken first. The loose pass only fills what is still
+ * missing, which is what covers locales that translate the name.
+ */
+function pickGiftIcons(gifts: CatalogGift[], base?: TikTokGiftIcons): TikTokGiftIcons {
+  const icons: TikTokGiftIcons = { ...base };
+
+  // The canonical English name of each gift, for the exact-match pass
+  const exact: Record<TikTokGiftKind, string> = {
+    rose: 'rose',
+    rosa: 'rosa',
+    tiktok: 'tiktok',
+    gg: 'gg',
+    heart: 'finger heart',
+    perfume: 'perfume',
+    doughnut: 'doughnut',
+    confetti: 'confetti',
+    money: 'money gun',
+    galaxy: 'galaxy',
+  };
+  for (const [kind, wanted] of Object.entries(exact) as [TikTokGiftKind, string][]) {
+    const hit = gifts.find((g) => g.name.trim().toLowerCase() === wanted && g.icon);
+    if (hit) icons[kind] = hit.icon;
+  }
+
+  for (const { name, icon } of gifts) {
+    const kind = classifyGift(name);
+    if (kind && icon && !icons[kind]) icons[kind] = icon;
+  }
+
+  return icons;
 }
 
 // Viewers are shown as characters on the floor. Capped so a busy LIVE can't
@@ -290,6 +402,7 @@ function removePlayerFromRoom(
     tiktok.disconnect(roomId);
     giftLedger.delete(roomId);
     giftIcons.delete(roomId);
+    giftCounts.delete(roomId);
     likeLedger.delete(roomId);
     viewerRegistry.delete(roomId);
     rooms.delete(roomId);
@@ -333,6 +446,14 @@ io.on('connection', (socket) => {
 
 
   socket.emit('connect:welcome', { playerId, rooms: getPublicRooms() });
+
+  // Gift artwork is global and needs no room, so send it on connect. It used
+  // to go out only from `room:join` — which the host never runs, since they
+  // arrive through `room:create` — so the person running the stream was the
+  // one person who never got the icons and sat on emoji forever.
+  socket.emit('tiktok:giftIcons', baseGiftIcons);
+  // Counts too, for the same reason: `room:join` is not a path the host takes.
+  socket.emit('tiktok:giftCounts', {});
 
   // --- Room management ---------------------------------------------------
 
@@ -432,7 +553,8 @@ io.on('connection', (socket) => {
     socket.emit('tiktok:status', tiktok.getStatus(room.id));
     socket.emit('tiktok:leaderboard', topGifters(room.id));
     socket.emit('tiktok:viewers', visibleViewers(room.id));
-    socket.emit('tiktok:giftIcons', giftIcons.get(room.id) ?? {});
+    socket.emit('tiktok:giftIcons', giftIcons.get(room.id) ?? baseGiftIcons);
+    socket.emit('tiktok:giftCounts', giftCounts.get(room.id) ?? {});
     socket.to(room.id).emit('room:playerJoined', player);
   });
 
@@ -796,11 +918,7 @@ io.on('connection', (socket) => {
       onStatus: (status) => io.to(roomId).emit('tiktok:status', status),
 
       onGiftCatalog: (gifts) => {
-        const icons: TikTokGiftIcons = { ...giftIcons.get(roomId) };
-        for (const { name, icon } of gifts) {
-          const kind = classifyGift(name);
-          if (kind && icon && !icons[kind]) icons[kind] = icon;
-        }
+        const icons = pickGiftIcons(gifts, giftIcons.get(roomId));
         giftIcons.set(roomId, icons);
         io.to(roomId).emit('tiktok:giftIcons', icons);
       },
@@ -848,7 +966,14 @@ io.on('connection', (socket) => {
         // Counted across messages: TikTok splits ordinary tapping into many
         // small like messages, so a per-message threshold almost never fires.
         // The cooldown stops one busy tapper from holding the camera.
-        if (entry.pending >= LIKE_FOCUS_MIN && now - entry.focusedAt > LIKE_FOCUS_COOLDOWN_MS) {
+        // Two gates: this viewer must not have just had the camera, and the
+        // room must not have cut to anyone recently. Without the second one a
+        // handful of tappers between them kept the shot permanently occupied.
+        if (
+          entry.pending >= LIKE_FOCUS_MIN &&
+          now - entry.focusedAt > LIKE_FOCUS_COOLDOWN_MS &&
+          claimFocus(roomId)
+        ) {
           entry.pending = 0;
           entry.focusedAt = now;
           io.to(roomId).emit('tiktok:action', { kind: 'focus', userId, nickname, at: now, likes: entry.total });
@@ -885,17 +1010,30 @@ io.on('connection', (socket) => {
         });
         io.to(roomId).emit('tiktok:leaderboard', topGifters(roomId));
 
-        // Every gift points the camera at whoever sent it. `kind` only says
-        // whether this gift ALSO swaps their character — the client focuses on
-        // any action regardless of kind.
-        const giftKind = classifyGift(giftName);
-        if (giftKind === 'rosa') say(`🍸 ${nickname} ra quầy bar order rượu`);
+        // Every gift points the camera at whoever sent it. The rule only adds
+        // what else happens — a scene effect, a line in chat — on top of that.
+        // A gift with no rule still gets the camera, so nobody is ignored.
+        const rule = ruleForGift(giftName);
+        if (rule?.say) say(rule.say.replace('{name}', nickname));
+
+        // Tally per gift so the broadcast overlay can show a running count
+        if (rule?.icon) {
+          const counts = { ...giftCounts.get(roomId) };
+          counts[rule.icon] = (counts[rule.icon] ?? 0) + count;
+          giftCounts.set(roomId, counts);
+          io.to(roomId).emit('tiktok:giftCounts', counts);
+        }
         io.to(roomId).emit('tiktok:action', {
-          kind: giftKind === 'tiktok' ? 'skin' : giftKind === 'rosa' ? 'bar' : 'focus',
+          kind: rule?.kind ?? 'focus',
           userId,
           nickname,
           at: Date.now(),
           fromGift: true,
+          // A rose walking someone to the bar is a journey, not a cut, so it
+          // always gets the camera; so does anything expensive.
+          camera: claimFocus(roomId, rule?.kind === 'bar' || diamonds >= FOCUS_ALWAYS_DIAMONDS),
+          effect: rule?.effect,
+          giftName,
         });
       },
 
@@ -933,3 +1071,23 @@ io.on('connection', (socket) => {
 server.listen(port, () => {
   console.log(`> Socket.IO server listening on http://localhost:${port}`);
 });
+
+// Warm the gift artwork up front. It needs no connected channel, so the rules
+// panel can show the real icons from the moment the page loads — and anyone
+// already connected gets them pushed as soon as the fetch lands.
+getGiftCatalog()
+  .then((gifts) => {
+    baseGiftIcons = pickGiftIcons(gifts);
+    console.log(`[tiktok] gift catalog ready: ${gifts.length} gifts`);
+
+    // Anyone who connected while this was in flight got an empty set. Catch
+    // them up individually, preferring their room's own icons if a channel is
+    // already linked there.
+    for (const [, socket] of io.sockets.sockets) {
+      const roomId = socketToRoom.get(socket.id);
+      socket.emit('tiktok:giftIcons', (roomId && giftIcons.get(roomId)) || baseGiftIcons);
+    }
+  })
+  .catch((err) => {
+    console.error('[tiktok] gift catalog failed:', err?.message ?? err);
+  });

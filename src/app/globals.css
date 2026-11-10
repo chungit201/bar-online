@@ -107,3 +107,30 @@ body {
 .animate-float-up {
   animation: float-up 2.5s ease-out forwards;
 }
+
+/* Gift banner: punch in, hold, fade out. Purely CSS so the component needs no
+   timer — it keys the element on the gift, which restarts the animation. */
+@keyframes gift-banner {
+  0%   { opacity: 0; transform: translateY(14px) scale(0.86); }
+  10%  { opacity: 1; transform: translateY(0) scale(1.06); }
+  18%  { transform: translateY(0) scale(1); }
+  80%  { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-18px) scale(0.98); }
+}
+
+.animate-gift-banner {
+  animation: gift-banner 4.5s ease-out forwards;
+}
+
+/* Gift board labels: slide the text through its fixed-width window and pause
+   at each end, so a long effect name reads in full without widening the tile.
+   Translating by a percentage of the text's own width (not the window's) is
+   what makes one rule work for labels of any length. */
+@keyframes slide-label {
+  0%, 22%   { transform: translateX(0); }
+  78%, 100% { transform: translateX(calc(-100% + 3rem)); }
+}
+
+.animate-slide-label {
+  animation: slide-label 5s ease-in-out infinite alternate;
+}

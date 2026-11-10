@@ -22,6 +22,9 @@ import StressTest, {
   type PerfSample,
 } from '@/components/avatar/StressTest';
 import FloatingReactions from '@/components/ui/FloatingReactions';
+import GiftBanner from '@/components/ui/GiftBanner';
+import GiftBoard from '@/components/ui/GiftBoard';
+import TopDancers from '@/components/ui/TopDancers';
 import PlayerAvatar3D from '@/components/avatar/PlayerAvatar3D';
 import TikTokCrowd, {
   BAR_ORDER_MS,
@@ -42,25 +45,68 @@ const CAMERA_PRESETS: Record<CameraView, { position: [number, number, number]; t
   screen: { position: [0, 5, -4], target: [0, 3, -13] },
   'top-down': { position: [0, 30, 0.1], target: [0, 0, 0] },
   'follow-me': { position: [0, 8, 8], target: [0, 0, 0] },
+
+  // Eye-level shots from the back of the room. These sit at roughly standing
+  // height (y ≈ 2.4) rather than looking down from 8+, which is what gives the
+  // depth the overhead presets lack: booths in the foreground, the crowd mid
+  // frame, the stage and LED wall behind. The aim point is lifted off the
+  // floor so the stage stays in frame instead of the shot pointing at feet.
+  'room-wide': { position: [0, 2.4, 14], target: [0, 2.6, -8] },
+  'booth-side': { position: [-7.5, 2.6, 11], target: [1.5, 2.4, -7] },
+  'low-angle': { position: [3, 1.5, 6.5], target: [-1, 3.2, -10] },
 };
 
 /**
  * A 9:16 frame crops horizontally, and three's `fov` is the *vertical* angle —
  * so the same pose shows a much narrower slice of the room than on desktop.
- * Pull back from the target to recover the framing, and lift the aim point so
- * the action sits above the bottom strip TikTok covers with its own UI.
+ *
+ * Two things recover the framing. A wider lens does most of the work and costs
+ * nothing in distance; the rest is a modest pull-back. The pull-back used to
+ * be 2.0 on its own, which threw every wide pose clean outside the building —
+ * that is what made the old 'diagonal' preset render as a black screen.
  */
-const OBS_PULLBACK = 2.0;
+const OBS_FOV = 85;
+const DESKTOP_FOV = 62;
+const OBS_PULLBACK = 1.5;
+
+/**
+ * How far out the pull-back may carry the camera. Roughly the club's own
+ * volume, with headroom above the 8-high ceiling for the looking-down presets
+ * that are composed from up there on purpose.
+ *
+ * Only the pull-back is limited — `k` never drops below 1 — so a pose authored
+ * outside this box is left exactly where it was composed.
+ */
+const ROOM_BOUNDS = {
+  x: [-23, 23] as const,
+  // Tracks the 11-high ceiling in BarScene, with headroom for the presets
+  // composed from above it on purpose
+  y: [0.9, 12.5] as const,
+  z: [-13.2, 15] as const,
+};
 
 function forVertical(p: CameraPose): CameraPose {
   const [px, py, pz] = p.position;
   const [tx, ty, tz] = p.target;
+  const d: [number, number, number] = [px - tx, py - ty, pz - tz];
+
+  // Shrink the pull-back until the camera lands back inside the room. Scaling
+  // the whole offset rather than clamping each axis keeps the viewing
+  // direction exactly as composed — clamping would quietly re-aim the shot.
+  let k = OBS_PULLBACK;
+  const limit = (origin: number, delta: number, [lo, hi]: readonly [number, number]) => {
+    if (delta > 0) k = Math.min(k, (hi - origin) / delta);
+    else if (delta < 0) k = Math.min(k, (lo - origin) / delta);
+  };
+  limit(tx, d[0], ROOM_BOUNDS.x);
+  limit(ty, d[1], ROOM_BOUNDS.y);
+  limit(tz, d[2], ROOM_BOUNDS.z);
+  k = Math.max(1, k);
+
   return {
-    position: [
-      tx + (px - tx) * OBS_PULLBACK,
-      ty + (py - ty) * OBS_PULLBACK,
-      tz + (pz - tz) * OBS_PULLBACK,
-    ],
+    position: [tx + d[0] * k, ty + d[1] * k, tz + d[2] * k],
+    // Lift the aim point so the action sits above the bottom strip TikTok
+    // covers with its own comments and gift tray.
     target: [tx, ty + 0.9, tz],
   };
 }
@@ -127,8 +173,10 @@ function GameView() {
     tiktokJumps,
     tiktokBarVisits,
     tiktokGiftIcons,
+    tiktokGiftCounts,
     tiktokLikes,
     tiktokGifters,
+    tiktokEffect,
     connectTikTok,
     disconnectTikTok,
     clearTikTokAction,
@@ -196,7 +244,23 @@ function GameView() {
   // tracks the player instead of being a fixed vantage point.
   // 'dance-floor' leads because it is the centred shot the camera comes home
   // to after a gift: front-on to the stage with the crowd filling the frame.
-  const CINEMATIC_VIEWS: CameraView[] = ['dance-floor', 'diagonal', 'screen', 'bar'];
+  //
+  // 'diagonal' is out: at 9:16 the pull-back swings it so far off-axis that the
+  // room leaves the frame and the shot reads as a black screen.
+  // 'bar' is out too — the bar preset aims into a corner with nothing in it
+  // unless a rose is walking someone over, and that case already gets its own
+  // focus shot (see `barFocus` below), so the cycle never needs to go there.
+  //
+  // The three eye-level shots carry most of the rotation: they are the ones
+  // with foreground, so they give the room depth instead of the flat
+  // looking-down-at-a-floor-plan feel the high presets have.
+  const CINEMATIC_VIEWS: CameraView[] = [
+    'dance-floor',
+    'room-wide',
+    'screen',
+    'booth-side',
+    'low-angle',
+  ];
 
   const pose = useMemo<CameraPose>(() => {
     // Auto-pan outranks the selected view. Checking 'follow-me' first meant
@@ -249,15 +313,24 @@ function GameView() {
   // holds until they have arrived and ordered.
   const barFocus = tiktokAction?.kind === 'bar' && !!giftFocusPose;
   const focusMs = barFocus ? BAR_WALK_MS + BAR_ORDER_MS : FOCUS_MS;
+  // Track every focused floor dancer live, not just the ones walking to the
+  // bar: while focused they also drift left and right under the follow spot,
+  // and a fixed pose would let them slide out of the shot. Aiming at their
+  // live position keeps them centred however far they wander.
+  //
+  // The top 3 are the exception — they are pinned to their stage slot, so the
+  // fixed pose is already right and there is nothing to follow.
   const focusFollow = useMemo(() => {
-    if (!barFocus || !tiktokAction) return null;
+    if (!tiktokAction) return null;
     const id = tiktokAction.userId;
+    const onStage = tiktokAction.kind !== 'bar' && tiktokTop.some((g) => g.userId === id);
+    if (onStage) return null;
     return (): CameraPose | null => {
       const p = crowdLive.get(id);
       if (!p) return null;
       return { position: [p.x + 2.2, 2.6, p.z + 4.0], target: [p.x, 1.1, p.z] };
     };
-  }, [barFocus, tiktokAction]);
+  }, [tiktokAction, tiktokTop]);
   const focusKey = useMemo(
     () =>
       tiktokAction && giftFocusPose
@@ -265,6 +338,9 @@ function GameView() {
         : null,
     [tiktokAction, giftFocusPose],
   );
+  // Clears itself: the effect below drops tiktokAction once the hold expires,
+  // which is the same condition that produced focusKey.
+  const focusUserId = tiktokAction && giftFocusPose ? tiktokAction.userId : null;
   const playerList = useMemo(() => Object.values(players), [players]);
   const isDancing = myPlayer?.animation === 'dancing';
   /** A track is actually sounding — not just queued and paused */
@@ -665,7 +741,7 @@ function GameView() {
                   <p className="mb-2.5 text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">
                     Quà tặng
                   </p>
-                  <GiftRules />
+                  <GiftRules icons={tiktokGiftIcons} />
                 </div>
               </div>
             </section>
@@ -802,11 +878,11 @@ function GameView() {
       {/* In broadcast mode the canvas is pinned to the target aspect and
           letterboxed, so what you see here is exactly what OBS captures. */}
       <div
-        className={
+        className={`relative overflow-hidden ${
           obsMode && aspect !== 'fill'
             ? `mx-auto h-full ${aspect === '9:16' ? 'aspect-[9/16]' : 'aspect-video'}`
             : 'h-full w-full'
-        }
+        }`}
       >
       <BarScene
         tables={barTables}
@@ -815,6 +891,7 @@ function GameView() {
         onFloorClick={handleFloorClick}
         tiktokTop={tiktokTop}
         tiktokSkins={tiktokSkins}
+        effect={tiktokEffect}
         stageVideo={musicQueue[currentSongIndex] ?? null}
         isPlaying={isPlaying}
         isMuted={isMuted}
@@ -834,6 +911,8 @@ function GameView() {
           barVisits={tiktokBarVisits}
           likes={tiktokLikes}
           gifters={tiktokGifters}
+          focusUserId={focusUserId}
+          effect={tiktokEffect}
         />
 
         {/* The host is the streamer, not a guest — they run the room from
@@ -858,6 +937,7 @@ function GameView() {
           focusKey={focusKey}
           focusMs={focusMs}
           focusFollow={focusFollow}
+          fov={obsMode && aspect === '9:16' ? OBS_FOV : DESKTOP_FOV}
           // Cinematic glides; a deliberate view change should feel responsive
           smoothing={cinematic ? 0.7 : 2.4}
           // A gift overrides a hand-held camera, so free-look has to go with
@@ -870,6 +950,21 @@ function GameView() {
           }}
         />
       </BarScene>
+
+      {/* Inside the letterboxed frame, so the hearts are part of the capture
+          rather than floating over the black bars beside it. */}
+      <FloatingReactions reactions={reactions} compact={aspect === '9:16'} />
+      <GiftBanner effect={tiktokEffect} compact={aspect === '9:16'} />
+
+      {/* Broadcast overlay. Lives inside the letterboxed frame so OBS captures
+          it with the scene, and only in obsMode — off-air the same information
+          is already in the control desk panels. */}
+      {obsMode && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-start justify-between gap-2 p-2">
+          <GiftBoard icons={tiktokGiftIcons} counts={tiktokGiftCounts} />
+          <TopDancers top={tiktokTop} />
+        </div>
+      )}
       </div>
 
       {/* Top HUD */}
@@ -1008,9 +1103,6 @@ function GameView() {
           )}
         </div>
       )}
-
-      {/* Floating reactions */}
-      <FloatingReactions reactions={reactions} />
 
       {/* Action bar */}
       {!obsMode && (

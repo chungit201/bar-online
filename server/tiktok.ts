@@ -43,8 +43,12 @@ export interface TikTokHandlers {
   onMember: (data: { userId: string; nickname: string; avatarUrl: string }) => void;
 }
 
-// Back off progressively; TikTok throttles clients that hammer reconnects.
-const RECONNECT_DELAYS_MS = [5000, 10000, 20000, 30000, 60000];
+// Back off progressively. Every connect spends one signing request, and the
+// keyless public pool only allows 5/min, 30/hour, 100/day per IP — a 5s first
+// retry burns the minute quota in under half a minute, after which the signed
+// handshake never arrives and the WebSocket just times out. Start past the
+// minute window and spread the rest across the hour.
+const RECONNECT_DELAYS_MS = [15000, 45000, 120000, 300000, 600000];
 // A combo whose repeatCount hasn't grown within this window is a resend
 const GIFT_DUPLICATE_WINDOW_MS = 5000;
 const CONNECT_TIMEOUT_MS = 25000;
@@ -74,6 +78,117 @@ function readSignApiKey(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The library's raw failures are opaque in the UI. In particular "Timed out
+ * whilst connecting to WebSocket" almost never means a network problem: the
+ * signed handshake URL never arrived because the keyless public signing pool
+ * (5/min, 30/hour, 100/day per IP) is spent.
+ */
+function describeError(err: unknown, hasKey: boolean): string {
+  if (!(err instanceof Error)) return 'Không kết nối được — kiểm tra kênh đã bật LIVE chưa';
+  const name = err.constructor?.name ?? '';
+  const msg = err.message;
+
+  if (/rate limit/i.test(msg) || name === 'SignatureRateLimitError') {
+    return hasKey
+      ? 'Hết hạn mức ký của SIGN_API_KEY — thử lại sau ít phút'
+      : 'Hết hạn mức ký miễn phí (5 lần/phút, 30/giờ). Thêm SIGN_API_KEY vào .env';
+  }
+  if (/timed out whilst connecting to websocket/i.test(msg) || name === 'ConnectTimeoutError') {
+    return hasKey
+      ? 'Quá thời gian mở WebSocket — kênh có thể vừa tắt LIVE, đang thử lại'
+      : 'Quá thời gian mở WebSocket do hết hạn mức ký miễn phí. Thêm SIGN_API_KEY vào .env';
+  }
+  if (name === 'UserOfflineError' || /offline/i.test(msg)) return 'Kênh hiện không LIVE';
+  if (name === 'InvalidUniqueIdError') return 'Tên kênh không tồn tại';
+  return msg;
+}
+
+// ---------------------------------------------------------------------------
+// Gift catalog
+// ---------------------------------------------------------------------------
+
+/**
+ * `conn.fetchAvailableGifts()` cannot be used here. It routes through a signed
+ * request to TikTok's own gift endpoint, which EulerStream gates behind their
+ * Business plan — on our key it throws SignatureMissingTokensError, so the
+ * catalog never arrived and every gift fell back to an emoji.
+ *
+ * EulerStream's own `/webcast/gifts` is included in the plan we do have. It
+ * hands back a presigned link to the full localized catalog: 761 gifts, every
+ * one of them carrying a name and real artwork.
+ *
+ * The result is global rather than per-room, which is fine (and in fact better)
+ * for looking an icon up by name. It is ~1.5 MB, so it is cached on disk and
+ * only refetched once a day.
+ */
+const GIFT_CATALOG_URL = 'https://tiktok.eulerstream.com/webcast/gifts';
+const GIFT_CACHE_FILE = path.join(process.cwd(), '.gift-catalog.json');
+const GIFT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+export interface CatalogGift {
+  name: string;
+  icon: string;
+}
+
+let catalogPromise: Promise<CatalogGift[]> | null = null;
+
+function readCachedCatalog(): CatalogGift[] | null {
+  try {
+    const stat = fs.statSync(GIFT_CACHE_FILE);
+    if (Date.now() - stat.mtimeMs > GIFT_CACHE_TTL_MS) return null;
+    const gifts = JSON.parse(fs.readFileSync(GIFT_CACHE_FILE, 'utf8'));
+    return Array.isArray(gifts) && gifts.length ? gifts : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadGiftCatalog(signApiKey: string | undefined): Promise<CatalogGift[]> {
+  const cached = readCachedCatalog();
+  if (cached) return cached;
+  if (!signApiKey) return [];
+
+  const res = await fetch(GIFT_CATALOG_URL, { headers: { 'X-Api-Key': signApiKey } });
+  const { url } = (await res.json()) as { url?: string };
+  if (!url) throw new Error('Gift catalog: no download URL returned');
+
+  const body = (await (await fetch(url)).json()) as {
+    data?: { gifts?: unknown[] };
+  };
+
+  const gifts: CatalogGift[] = (body.data?.gifts ?? [])
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .map((g: any) => ({ name: String(g?.name ?? ''), icon: giftIcon(g) }))
+    .filter((g) => g.name && g.icon);
+
+  if (!gifts.length) throw new Error('Gift catalog: response contained no gifts');
+
+  try {
+    fs.writeFileSync(GIFT_CACHE_FILE, JSON.stringify(gifts));
+  } catch {
+    /* cache is an optimisation, not a requirement */
+  }
+  return gifts;
+}
+
+/**
+ * Shared across rooms — the catalog is global, so one fetch serves everyone,
+ * and it does not depend on any channel being connected. The server loads it
+ * at startup so the gift rules show real artwork before the host links a
+ * channel, rather than sitting on emoji until the first connect.
+ */
+export function getGiftCatalog(): Promise<CatalogGift[]> {
+  if (!catalogPromise) {
+    catalogPromise = loadGiftCatalog(readSignApiKey()).catch((err) => {
+      // Clear the slot so a transient failure doesn't poison every later room
+      catalogPromise = null;
+      throw err;
+    });
+  }
+  return catalogPromise;
 }
 
 /** Accepts "@name", a profile URL, or a bare username */
@@ -308,7 +423,7 @@ export function createTikTokBridge() {
 
     conn.on(ControlEvent.ERROR, (err: unknown) => {
       if (!current()) return;
-      publish(link, { lastError: err instanceof Error ? err.message : String(err) });
+      publish(link, { lastError: describeError(err, !!readSignApiKey()) });
     });
   }
 
@@ -358,11 +473,12 @@ export function createTikTokBridge() {
     // channel fail with a clear UserOfflineError. With it off, connecting to a
     // channel that isn't live just hangs until the WebSocket times out, which
     // is indistinguishable from a signing problem.
+    const signApiKey = readSignApiKey();
     const conn = new connector.TikTokLiveConnection(channel, {
       processInitialData: false,
       fetchRoomInfoOnConnect: true,
       enableExtendedGiftInfo: false,
-      signApiKey: readSignApiKey(),
+      signApiKey,
     });
     link.connection = conn;
     attach(roomId, link, conn, connector);
@@ -382,25 +498,22 @@ export function createTikTokBridge() {
       if (links.get(roomId) !== link) return;
       link.attempt = 0;
       publish(link, { connected: true, connecting: false, lastError: null });
-      conn
-        .fetchAvailableGifts()
-        .then((list) => {
-          if (links.get(roomId) !== link || !Array.isArray(list)) return;
-          link.handlers.onGiftCatalog(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            list.map((g: any) => ({ name: String(g?.name ?? ''), icon: giftIcon(g) })),
-          );
+      getGiftCatalog()
+        .then((gifts) => {
+          if (links.get(roomId) !== link) return;
+          link.handlers.onGiftCatalog(gifts);
         })
-        .catch(() => {});
+        .catch((err) => {
+          // Logged rather than swallowed: a silent catch here is exactly what
+          // hid the Business-plan failure that left every gift as an emoji.
+          console.error('[tiktok] gift catalog failed:', err?.message ?? err);
+        });
     } catch (err) {
       if (links.get(roomId) !== link) return;
       publish(link, {
         connected: false,
         connecting: false,
-        lastError:
-          err instanceof Error
-            ? err.message
-            : 'Không kết nối được — kiểm tra kênh đã bật LIVE chưa',
+        lastError: describeError(err, !!signApiKey),
       });
       scheduleReconnect(roomId, link);
     }

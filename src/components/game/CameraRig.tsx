@@ -33,7 +33,14 @@ export default function CameraRig({
   onFocusStart,
   focusMs = FOCUS_MS,
   focusFollow,
+  fov,
 }: {
+  /**
+   * Vertical field of view. Owned here rather than on the Canvas, because the
+   * Canvas `camera` prop is only read on mount — switching broadcast aspect
+   * afterwards would otherwise leave the old lens on.
+   */
+  fov?: number;
   /** How long this focus holds */
   focusMs?: number;
   /** Live pose for a moving subject; wins over `focusPose` while it returns one */
@@ -82,9 +89,19 @@ export default function CameraRig({
     wantTarget.current.set(tx, ty, tz);
   }, [px, py, pz, tx, ty, tz]);
 
-  useFrame((_, delta) => {
+
+  useFrame((state, delta) => {
     const c = controls.current;
     if (!c) return;
+
+    // Swapped here rather than in an effect: the camera is a live three.js
+    // object, and reaching through the frame state is how the rest of this
+    // loop already drives it.
+    const cam = state.camera as THREE.PerspectiveCamera;
+    if (fov !== undefined && cam.isPerspectiveCamera && cam.fov !== fov) {
+      cam.fov = fov;
+      cam.updateProjectionMatrix();
+    }
 
     const now = performance.now();
 
@@ -104,9 +121,22 @@ export default function CameraRig({
     wantPos.current.set(...active.position);
     wantTarget.current.set(...active.target);
 
+    // Glide in at a cinematic rate, then lock on once close. Tracking a moving
+    // subject at the approach rate lags visibly behind them, so they drift off
+    // centre — which is exactly what a follow shot is supposed to prevent.
+    // Switching on distance keeps the arrival soft without paying that lag for
+    // the rest of the hold.
+    const FOLLOW_LOCK_RATE = 9;
+    const APPROACH_RATE = 1.8;
+    const rate = holding
+      ? camera.position.distanceTo(wantPos.current) > 1.5
+        ? APPROACH_RATE
+        : FOLLOW_LOCK_RATE
+      : smoothing;
+
     // Exponential approach, framed in seconds so the feel is identical at
     // 30fps and 144fps. A plain lerp(alpha) would be frame-rate dependent.
-    const k = 1 - Math.exp(-(holding ? 1.8 : smoothing) * Math.min(delta, 0.1));
+    const k = 1 - Math.exp(-rate * Math.min(delta, 0.1));
     camera.position.lerp(wantPos.current, k);
     c.target.lerp(wantTarget.current, k);
     c.update();

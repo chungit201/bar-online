@@ -42,3 +42,4 @@ next-env.d.ts
 
 # raw frames for scripts/gen-titles.mjs
 scripts/.titles-raw/
+.gift-catalog.json

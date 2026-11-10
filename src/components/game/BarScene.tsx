@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, useEffect } from 'react';
+import { useRef, useMemo, useEffect, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Text, Html, Line } from '@react-three/drei';
 import * as THREE from 'three';
@@ -10,7 +10,7 @@ import DanceSprite from '@/components/avatar/DanceSprite';
 import NameTag from '@/components/avatar/NameTag';
 import TitleBadge, { STAGE_TITLES } from '@/components/avatar/TitleBadge';
 import { getClip } from '@/components/avatar/dances';
-import type { TikTokGifter } from '@/types';
+import type { TikTokAction, TikTokGifter } from '@/types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,6 +41,8 @@ interface BarSceneProps {
   tiktokTop?: TikTokGifter[];
   /** userId -> clip id, from the skin-swap gift */
   tiktokSkins?: Record<string, string>;
+  /** Latest gift effect; this component owns the room-wide ones */
+  effect?: TikTokAction | null;
   children?: React.ReactNode;
 }
 
@@ -66,7 +68,15 @@ const TABLE_TOP = '#1a1a2a';
 // Checkered dance floor tiles
 // ---------------------------------------------------------------------------
 
-function DanceFloorTiles() {
+/** Soft pastel set the Perfume gift washes the floor with */
+const PERFUME_COLORS = ['#f9a8d4', '#c4b5fd', '#a5f3fc', '#fbcfe8', '#ddd6fe', '#bae6fd', '#fecdd3', '#e9d5ff'];
+const FLOOR_WASH_MS = 8000;
+
+function DanceFloorTiles({ washKey = '' }: { washKey?: string }) {
+  const mats = useRef<(THREE.MeshStandardMaterial | null)[]>([]);
+  const washStart = useRef(-Infinity);
+  const seenWashKey = useRef(washKey);
+
   const tileColors = [
     NEON_PURPLE, NEON_BLUE, NEON_PINK, NEON_CYAN,
     '#6366f1', '#8b5cf6', '#d946ef', '#0ea5e9',
@@ -81,10 +91,14 @@ function DanceFloorTiles() {
       const x = (col - gridSize / 2 + 0.5) * (tileSize + gap);
       const z = (row - gridSize / 2 + 0.5) * (tileSize + gap);
       const colorIdx = (row + col) % tileColors.length;
+      const idx = row * gridSize + col;
       tiles.push(
         <mesh key={`tile-${row}-${col}`} position={[x, 0.03, z]} rotation={[-Math.PI / 2, 0, 0]}>
           <planeGeometry args={[tileSize, tileSize]} />
           <meshStandardMaterial
+            ref={(m) => {
+              mats.current[idx] = m;
+            }}
             color={tileColors[colorIdx]}
             emissive={tileColors[colorIdx]}
             emissiveIntensity={0.4}
@@ -94,6 +108,35 @@ function DanceFloorTiles() {
       );
     }
   }
+
+  // Perfume: fade the whole floor over to pastels, hold, then fade back. The
+  // colour is lerped rather than swapped so the change reads as a wash rolling
+  // across the floor instead of the lights being switched.
+  useFrame(() => {
+    // Empty means 'some other gift is current' — not a cue to fire
+    if (washKey && washKey !== seenWashKey.current) {
+      seenWashKey.current = washKey;
+      washStart.current = performance.now();
+    }
+    const since = performance.now() - washStart.current;
+    if (since > FLOOR_WASH_MS + 600) return;
+
+    const fade = 600;
+    const k =
+      since < fade ? since / fade
+      : since > FLOOR_WASH_MS - fade ? Math.max(0, (FLOOR_WASH_MS - since) / fade)
+      : 1;
+
+    for (let i = 0; i < mats.current.length; i++) {
+      const m = mats.current[i];
+      if (!m) continue;
+      const base = new THREE.Color(tileColors[i % tileColors.length]);
+      const pastel = new THREE.Color(PERFUME_COLORS[i % PERFUME_COLORS.length]);
+      m.color.copy(base).lerp(pastel, k);
+      m.emissive.copy(base).lerp(pastel, k);
+      m.emissiveIntensity = 0.4 + k * 0.8;
+    }
+  });
 
   return (
     <group position={[0, 0, 0]}>
@@ -235,7 +278,15 @@ function Floor() {
 // ---------------------------------------------------------------------------
 
 // Club wall height — tall enough to fit the 16:9 stage LED wall
-const WALL_H = 8;
+const WALL_H = 11;
+/**
+ * Where ceiling-mounted kit hangs: lasers, strobes, moving heads.
+ *
+ * Derived from WALL_H rather than written out, because these used to be hard
+ * numbers around 7.5 — raising the room would have left the whole lighting rig
+ * floating in mid-air several units below the new ceiling.
+ */
+const RIG_Y = WALL_H - 0.5;
 
 function Walls() {
   return (
@@ -542,12 +593,6 @@ function DJStage({ musicOn }: { musicOn: boolean }) {
 
       <DJConsole musicOn={musicOn} />
 
-      {/* "SÂN KHẤU" sign — above the LED wall so it never covers the video */}
-      <Text position={[0, 7.2, -1.3]} fontSize={0.5} color={NEON_CYAN}>
-        SÂN KHẤU
-        <meshStandardMaterial color={NEON_CYAN} emissive={NEON_CYAN} emissiveIntensity={5} toneMapped={false} />
-      </Text>
-
       {/* Decorative speakers */}
       {[-3.2, 3.2].map((x, i) => (
         <group key={`speaker-${i}`} position={[x, 0.6, -0.5]}>
@@ -707,7 +752,7 @@ function DiscoBall() {
     if (ref.current) ref.current.rotation.y += delta * 0.5;
   });
   return (
-    <group position={[0, 4.8, 0]}>
+    <group position={[0, WALL_H - 4, 0]}>
       {/* Wire */}
       <mesh position={[0, 0.4, 0]}>
         <cylinderGeometry args={[0.01, 0.01, 0.8, 4]} />
@@ -1678,7 +1723,7 @@ interface ConfettiPiece {
  * All pieces live in one InstancedMesh, so the whole effect is a single
  * draw call no matter how many flakes are in the air.
  */
-function Confetti({ count = 160 }: { count?: number }) {
+function Confetti({ count = 160, burstKey = '' }: { count?: number; burstKey?: string }) {
   const mesh = useRef<THREE.InstancedMesh>(null);
   // Refs rather than useMemo: these are mutated every frame, which is exactly
   // what refs are the escape hatch for. Mutating a render-time value instead
@@ -1687,6 +1732,7 @@ function Confetti({ count = 160 }: { count?: number }) {
   const pieces = useRef<ConfettiPiece[]>([]);
   // Seeded on the first frame — Math.random() during render is impure
   const nextBurst = useRef(0);
+  const seenBurstKey = useRef(burstKey);
 
   // Per-instance colour, assigned once
   useEffect(() => {
@@ -1718,9 +1764,15 @@ function Confetti({ count = 160 }: { count?: number }) {
     const t = clock.getElapsedTime();
     const obj = dummy.current;
 
-    if (nextBurst.current === 0) {
+    // A Confetti gift fires immediately; otherwise the room bursts on its own
+    // timer. Comparing against the last key seen means one gift means one
+    // burst, however many frames pass before the prop settles.
+    const gift = !!burstKey && burstKey !== seenBurstKey.current;
+    if (gift) seenBurstKey.current = burstKey;
+
+    if (nextBurst.current === 0 && !gift) {
       nextBurst.current = t + 12 + Math.random() * 10;
-    } else if (t > nextBurst.current) {
+    } else if (gift || t > nextBurst.current) {
       nextBurst.current = t + 28 + Math.random() * 22;
       for (const p of list) {
         p.x = (Math.random() - 0.5) * 26;
@@ -1775,6 +1827,116 @@ function Confetti({ count = 160 }: { count?: number }) {
 }
 
 // ---------------------------------------------------------------------------
+// Gift effect plumbing
+// ---------------------------------------------------------------------------
+
+/** How long the Galaxy gift holds the house lights down */
+const GALAXY_MS = 10000;
+
+/**
+ * True for `ms` after the matching gift lands, then false again.
+ *
+ * The latch lives in the frame loop rather than an effect for two reasons:
+ * the gift's `at` is stamped by the server clock and cannot be compared with
+ * performance.now(), and setting state synchronously inside an effect is what
+ * triggers the cascading-render rule. A frame callback is neither.
+ */
+function useTimedFlag(effectKey: string, armed: boolean, ms: number): boolean {
+  const [on, setOn] = useState(false);
+  const seen = useRef('');
+  const until = useRef(0);
+
+  useFrame(() => {
+    if (armed && effectKey && seen.current !== effectKey) {
+      seen.current = effectKey;
+      until.current = performance.now() + ms;
+      setOn(true);
+    } else if (until.current > 0 && performance.now() > until.current) {
+      until.current = 0;
+      setOn(false);
+    }
+  });
+
+  return on;
+}
+
+// ---------------------------------------------------------------------------
+// Money Gun — gold coins raining over the room
+// ---------------------------------------------------------------------------
+
+const MONEY_MS = 7000;
+const COIN_COUNT = 120;
+
+function MoneyRain({ burstKey = '' }: { burstKey?: string }) {
+  const mesh = useRef<THREE.InstancedMesh>(null);
+  const dummy = useRef(new THREE.Object3D());
+  const seenKey = useRef(burstKey);
+  const startedAt = useRef(-Infinity);
+  // Per-coin lane and spin, fixed for the life of the burst
+  const seeds = useRef(
+    Array.from({ length: COIN_COUNT }, () => ({
+      x: 0, z: 0, y: 0, vy: 0, spin: 0, tilt: 0, delay: 0,
+    })),
+  );
+
+  useFrame((_, delta) => {
+    if (!mesh.current) return;
+
+    if (burstKey && burstKey !== seenKey.current) {
+      seenKey.current = burstKey;
+      startedAt.current = performance.now();
+      for (const c of seeds.current) {
+        c.x = (Math.random() - 0.5) * 22;
+        c.z = (Math.random() - 0.5) * 18;
+        c.y = WALL_H + Math.random() * 4;
+        c.vy = -(1.6 + Math.random() * 1.4);
+        c.spin = (Math.random() - 0.5) * 9;
+        c.tilt = Math.random() * Math.PI;
+        c.delay = Math.random() * 1.2;
+      }
+    }
+
+    const since = performance.now() - startedAt.current;
+    const d = Math.min(delta, 0.05);
+    const obj = dummy.current;
+
+    for (let i = 0; i < COIN_COUNT; i++) {
+      const c = seeds.current[i];
+      const live = since >= 0 && since < MONEY_MS && since / 1000 > c.delay && c.y > 0;
+      if (live) {
+        c.y += c.vy * d;
+        c.tilt += c.spin * d;
+        obj.position.set(c.x, c.y, c.z);
+        // Spinning about Y as well as tumbling so coins catch the light from
+        // both faces on the way down
+        obj.rotation.set(Math.PI / 2, c.tilt, c.tilt * 0.6);
+        obj.scale.setScalar(1);
+      } else {
+        obj.position.set(0, -10, 0);
+        obj.scale.setScalar(0);
+      }
+      obj.updateMatrix();
+      mesh.current.setMatrixAt(i, obj.matrix);
+    }
+    mesh.current.instanceMatrix.needsUpdate = true;
+  });
+
+  return (
+    <instancedMesh ref={mesh} args={[undefined, undefined, COIN_COUNT]} frustumCulled={false}>
+      <cylinderGeometry args={[0.11, 0.11, 0.015, 14]} />
+      <meshStandardMaterial
+        color="#fcd34d"
+        emissive="#f59e0b"
+        emissiveIntensity={1.4}
+        metalness={0.9}
+        roughness={0.25}
+        toneMapped={false}
+      />
+    </instancedMesh>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Animated lights
 // ---------------------------------------------------------------------------
 
@@ -1812,12 +1974,16 @@ function AnimatedLights() {
 // Lighting
 // ---------------------------------------------------------------------------
 
-function Lighting() {
+function Lighting({ galaxy = false }: { galaxy?: boolean }) {
+  // Galaxy mode kills the house lights so only the lasers and strobes carry
+  // the room. Dimming rather than removing keeps the lights mounted, so there
+  // is no shader recompile when the effect ends.
+  const house = galaxy ? 0.12 : 1;
   return (
     <>
-      <ambientLight intensity={1.15} color={'#b9b9e0'} />
-      <hemisphereLight args={['#8a8ad0', '#2a2a3a', 0.9]} />
-      <directionalLight color={'#ffffff'} intensity={0.4} position={[5, 10, 5]} />
+      <ambientLight intensity={1.15 * house} color={'#b9b9e0'} />
+      <hemisphereLight args={['#8a8ad0', '#2a2a3a', 0.9 * house]} />
+      <directionalLight color={'#ffffff'} intensity={0.4 * house} position={[5, 10, 5]} />
 
       {/* Colored area lights */}
       <pointLight color={NEON_PURPLE} intensity={15} distance={30} position={[-8, 4, -8]} />
@@ -1882,8 +2048,18 @@ function SceneContent({
   onVideoEnd,
   tiktokTop,
   tiktokSkins,
+  effect,
   children,
 }: BarSceneProps) {
+  // Each room-wide effect is driven by a key that changes once per gift, so
+  // the frame loops can fire exactly once without comparing server clocks to
+  // performance.now(). Galaxy also needs a duration, so it gets a timer.
+  const effectKey = effect ? `${effect.effect}:${effect.userId}:${effect.at}` : '';
+  const confettiKey = effect?.effect === 'confetti' ? effectKey : '';
+  const washKey = effect?.effect === 'floorWash' ? effectKey : '';
+  const moneyKey = effect?.effect === 'moneyRain' ? effectKey : '';
+  const galaxy = useTimedFlag(effectKey, effect?.effect === 'galaxy', GALAXY_MS);
+
   const allTables = useMemo(() => {
     if (tables.length > 2) return tables;
     return DEFAULT_BOOTH_POSITIONS.map((b, i) => ({
@@ -1896,16 +2072,19 @@ function SceneContent({
   // "Music is on" means a track is loaded *and* running — a paused queue
   // shouldn't leave the whole room pulsing.
   const musicOn = !!stageVideo && !!isPlaying;
+  // Galaxy drives the light show whether or not a track is playing: with the
+  // house lights down and nothing moving, the room would just go dark.
+  const fxOn = musicOn || galaxy;
 
   return (
     <>
-      <Lighting />
+      <Lighting galaxy={galaxy} />
       <Floor />
       <Walls />
       <BarCounter />
       <BarStaff />
       <StagePerformers top={tiktokTop} skins={tiktokSkins} />
-      <DanceFloorTiles />
+      <DanceFloorTiles washKey={washKey} />
       <DiscoBall />
       <DJStage musicOn={musicOn} />
       <LEDScreen
@@ -1965,76 +2144,88 @@ function SceneContent({
       <SpeakerStack position={[-11.6, 0, -4.6]} color={NEON_PURPLE} musicOn={musicOn} />
 
       {/* Strobes, offset so they chase rather than all firing at once */}
-      <Strobe position={[-6, 7.5, -6]} color={'#ffffff'} offset={0} musicOn={musicOn} />
-      <Strobe position={[6, 7.5, -6]} color={'#ffffff'} offset={0.12} musicOn={musicOn} />
-      <Strobe position={[-6, 7.5, 2]} color={NEON_CYAN} offset={0.24} musicOn={musicOn} />
-      <Strobe position={[6, 7.5, 2]} color={NEON_PINK} offset={0.36} musicOn={musicOn} />
+      <Strobe position={[-6, RIG_Y, -6]} color={'#ffffff'} offset={0} musicOn={fxOn} />
+      <Strobe position={[6, RIG_Y, -6]} color={'#ffffff'} offset={0.12} musicOn={fxOn} />
+      <Strobe position={[-6, RIG_Y, 2]} color={NEON_CYAN} offset={0.24} musicOn={fxOn} />
+      <Strobe position={[6, RIG_Y, 2]} color={NEON_PINK} offset={0.36} musicOn={fxOn} />
 
       {/* Moving spotlight beams from the ceiling */}
-      <SpotBeam position={[-4, 7.6, -2]} color={NEON_PINK} phase={0} musicOn={musicOn} />
-      <SpotBeam position={[4, 7.6, -2]} color={NEON_CYAN} phase={1.6} musicOn={musicOn} />
+      <SpotBeam position={[-4, RIG_Y, -2]} color={NEON_PINK} phase={0} musicOn={fxOn} />
+      <SpotBeam position={[4, RIG_Y, -2]} color={NEON_CYAN} phase={1.6} musicOn={fxOn} />
       <SpotBeam
-        position={[0, 7.6, 3]}
+        position={[0, RIG_Y, 3]}
         color={'#ffffff'}
         phase={3.1}
         speed={0.38}
-        musicOn={musicOn}
+        musicOn={fxOn}
       />
       <SpotBeam
-        position={[-9, 7.6, -8]}
+        position={[-9, RIG_Y, -8]}
         color={NEON_PURPLE}
         phase={4.2}
         speed={0.44}
-        musicOn={musicOn}
+        musicOn={fxOn}
       />
       <SpotBeam
-        position={[9, 7.6, -8]}
+        position={[9, RIG_Y, -8]}
         color={NEON_BLUE}
         phase={5.5}
         speed={0.56}
-        musicOn={musicOn}
+        musicOn={fxOn}
       />
 
-      <BeatWash musicOn={musicOn} />
+      <BeatWash musicOn={fxOn} />
       <Ceiling />
-      <CeilingCove musicOn={musicOn} />
+      <CeilingCove musicOn={fxOn} />
 
-      <Confetti />
+      <Confetti burstKey={confettiKey} />
+      <MoneyRain burstKey={moneyKey} />
 
       {/* Laser rigs raking across the room.
           tilt ≈ ±π/2 lays the fan flat so the rays cross the floor plane
           horizontally; a small offset from π/2 angles them gently downward. */}
+      {/* A fan's rays leave the emitter along local -Y, so a tilt of exactly
+          PI/2 rakes dead level. The gap from PI/2 is what makes them fall:
+          a ray drops `length * sin(gap)` over its run. At the old gap of 0.22
+          that was 34 * 0.218 ≈ 7.4 units of drop — from a 6.6-high emitter the
+          beams reached the floor less than halfway across and sliced straight
+          through the crowd. The gaps below drop each fan to about y = 6, which
+          keeps it well clear of the 3.4-high stage performers while still
+          raking through frame rather than hugging the ceiling. */}
       <LaserFan
-        position={[-18, 6.6, 11]}
+        position={[-18, RIG_Y, 11]}
         color={NEON_PINK}
-        tilt={Math.PI / 2 - 0.22}
+        tilt={Math.PI / 2 - 0.13}
         phase={0}
-        musicOn={musicOn}
+        musicOn={fxOn}
       />
       <LaserFan
-        position={[18, 6.6, 11]}
+        position={[18, RIG_Y, 11]}
         color={NEON_CYAN}
-        tilt={Math.PI / 2 - 0.22}
+        tilt={Math.PI / 2 - 0.13}
         phase={2.1}
         speed={0.31}
-        musicOn={musicOn}
+        musicOn={fxOn}
       />
       <LaserFan
-        position={[0, 7.2, -12.5]}
+        position={[0, RIG_Y, -12.5]}
         color={NEON_GREEN}
-        tilt={-(Math.PI / 2 - 0.3)}
+        tilt={-(Math.PI / 2 - 0.14)}
         phase={4.0}
         speed={0.22}
-        musicOn={musicOn}
+        musicOn={fxOn}
       />
+      {/* Was aimed almost straight down (tilt 0.45) from mid-room, which put
+          its rays through the dancers directly below. Now it rakes forward
+          over their heads like the other three. */}
       <LaserFan
-        position={[0, 7.4, 2]}
+        position={[0, RIG_Y, 2]}
         color={NEON_PURPLE}
-        tilt={0.45}
+        tilt={-(Math.PI / 2 - 0.22)}
         length={16}
         phase={5.3}
         speed={0.28}
-        musicOn={musicOn}
+        musicOn={fxOn}
       />
 
       {/* Neon pillars */}
@@ -2086,6 +2277,7 @@ export default function BarScene({
   onVideoEnd,
   tiktokTop,
   tiktokSkins,
+  effect,
   children,
 }: BarSceneProps) {
   return (
@@ -2113,6 +2305,7 @@ export default function BarScene({
         onVideoEnd={onVideoEnd}
         tiktokTop={tiktokTop}
         tiktokSkins={tiktokSkins}
+        effect={effect}
       >
         {children}
       </SceneContent>

@@ -22,9 +22,11 @@ let nextId = 0;
 
 interface FloatingReactionsProps {
   reactions: { playerId: string; playerName: string; reaction: string }[];
+  /** Tall broadcast frame: far less width to play with, so scale everything down */
+  compact?: boolean;
 }
 
-export default function FloatingReactions({ reactions }: FloatingReactionsProps) {
+export default function FloatingReactions({ reactions, compact = false }: FloatingReactionsProps) {
   const [emojis, setEmojis] = useState<FloatingEmoji[]>([]);
 
   useEffect(() => {
@@ -44,7 +46,11 @@ export default function FloatingReactions({ reactions }: FloatingReactionsProps)
   }, [reactions.length]);
 
   return (
-    <div className="pointer-events-none fixed inset-0 z-50 overflow-hidden">
+    // `absolute`, not `fixed`: fixed positions against the viewport, so in
+    // broadcast mode the hearts floated over the letterbox bars instead of
+    // staying inside the captured frame. This now fills whichever parent is
+    // the frame, and `overflow-hidden` clips anything that drifts out.
+    <div className="pointer-events-none absolute inset-0 z-50 overflow-hidden">
       {emojis.map((e) => (
         <div
           key={e.id}
@@ -52,8 +58,12 @@ export default function FloatingReactions({ reactions }: FloatingReactionsProps)
           style={{ left: `${e.x}%`, bottom: '10%' }}
         >
           <div className="flex flex-col items-center">
-            <span className="text-4xl drop-shadow-lg">{e.emoji}</span>
-            <span className="mt-1 rounded-full bg-black/50 px-2 py-0.5 text-[10px] text-white/80 backdrop-blur-sm">
+            <span className={`${compact ? 'text-xl' : 'text-4xl'} drop-shadow-lg`}>{e.emoji}</span>
+            <span
+              className={`mt-1 rounded-full bg-black/50 text-white/80 backdrop-blur-sm ${
+                compact ? 'px-1.5 py-px text-[7px]' : 'px-2 py-0.5 text-[10px]'
+              }`}
+            >
               {e.playerName}
             </span>
           </div>

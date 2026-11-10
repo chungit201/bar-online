@@ -12,48 +12,85 @@
 // Provenance: see public/characters/README.md.
 // ---------------------------------------------------------------------------
 
+/**
+ * Where the character actually sits inside the PNG canvas, as fractions of it.
+ *
+ * These GIFs come from many sources and pad the character differently — some
+ * fill the canvas edge to edge, others leave a quarter of it empty. Scaling a
+ * sprite by its canvas height therefore makes the *canvas* 1.7 units tall, so
+ * a tightly cropped dancer stands a head above a loosely cropped one on the
+ * same floor. `trim` is what lets the renderer size and plant the character
+ * instead of the canvas.
+ *
+ * Measured, not guessed: the union of opaque pixels across every frame of the
+ * clip (union, so arms thrown up mid-loop don't make the sprite pulse).
+ * Regenerate with `node scripts/measure-sprite-trim.mjs`.
+ */
+export interface SpriteTrim {
+  /** Distance from the canvas top to the character's highest pixel */
+  top: number;
+  /** Distance from the canvas top to just past the character's lowest pixel */
+  bottom: number;
+  left: number;
+  right: number;
+}
+
 export interface DanceClip {
   id: string;
   frames: number;
   width: number;
   height: number;
   fps: number;
+  trim?: SpriteTrim;
+  /**
+   * Manual size multiplier, for art that isn't a full figure.
+   *
+   * `trim` makes every sprite the same height measured head to foot — which is
+   * only the right answer when the art *is* head to foot. A few of these GIFs
+   * are cropped portraits (head and shoulders, body cut off at the chest), and
+   * stretching those to a full character's height leaves a head the size of
+   * everyone else's whole body. Scaling them down until the *head* matches is
+   * what actually makes the crowd read as one size.
+   */
+  scale?: number;
 }
 
 export const DANCE_CLIPS: DanceClip[] = [
-  { id: 'a', frames: 10, width: 240, height: 240, fps: 24 },
-  { id: 'b', frames: 12, width: 256, height: 208, fps: 10 },
-  { id: 'c', frames: 8, width: 256, height: 256, fps: 10 },
-  { id: 'd', frames: 16, width: 177, height: 177, fps: 14 },
-  { id: 'e', frames: 8, width: 240, height: 240, fps: 14 },
-  { id: 'g', frames: 15, width: 256, height: 255, fps: 9 },
-  { id: 'h', frames: 9, width: 256, height: 218, fps: 20 },
-  { id: 'j', frames: 14, width: 240, height: 240, fps: 10 },
-  { id: 'k', frames: 9, width: 256, height: 256, fps: 10 },
-  { id: 'l', frames: 9, width: 480, height: 480, fps: 10 },
-  { id: 'x', frames: 35, width: 240, height: 240, fps: 10 },
-  { id: 'z', frames: 20, width: 240, height: 240, fps: 10 },
-  { id: 'hanhan_video_dance', frames: 40, width: 256, height: 372, fps: 10 },
-  { id: 'mushroom_dance_01', frames: 14, width: 240, height: 240, fps: 11 },
-  { id: 'mushroom_dance_02', frames: 68, width: 240, height: 240, fps: 24 },
-  { id: 'mushroom_dance_03', frames: 4, width: 177, height: 177, fps: 8 },
-  { id: 'mushroom_dance_05', frames: 70, width: 240, height: 240, fps: 24 },
-  { id: 'mushroom_dance_06', frames: 24, width: 177, height: 177, fps: 10 },
-  { id: 'mushroom_dance_08', frames: 9, width: 240, height: 240, fps: 7 },
-  { id: 'mushroom_dance_09', frames: 10, width: 276, height: 276, fps: 5 },
-  { id: 'mushroom_dance_12', frames: 6, width: 240, height: 240, fps: 8 },
-  { id: 'mushroom_dance_13', frames: 4, width: 240, height: 240, fps: 10 },
-  { id: 'mushroom_dance_14', frames: 4, width: 240, height: 240, fps: 10 },
-  { id: 'mushroom_dance_15', frames: 11, width: 240, height: 240, fps: 10 },
-  { id: 'mushroom_dance_16', frames: 21, width: 240, height: 240, fps: 14 },
-  { id: 'mushroom_dance_17', frames: 16, width: 240, height: 240, fps: 24 },
-  { id: 'mushroom_dance_18', frames: 45, width: 240, height: 240, fps: 10 },
-  { id: 'mushroom_dance_19', frames: 35, width: 240, height: 240, fps: 24 },
-  { id: 'mushroom_dance_42', frames: 4, width: 177, height: 177, fps: 14 },
-  { id: 'mushroom_dance_55', frames: 10, width: 240, height: 240, fps: 10 },
-  { id: 'mushroom_magic_02', frames: 16, width: 240, height: 240, fps: 24 },
-  { id: 'mushroom_magic_05', frames: 31, width: 240, height: 240, fps: 10 },
-  { id: 'mushroom_magic_07', frames: 27, width: 240, height: 240, fps: 24 },
+  { id: 'a', frames: 10, width: 240, height: 240, fps: 24, trim: { top: 0.008, bottom: 0.996, left: 0.108, right: 0.842 } },
+  { id: 'b', frames: 12, width: 256, height: 208, fps: 10, trim: { top: 0.034, bottom: 0.957, left: 0.148, right: 0.824 } },
+  // Cropped portrait: head and shoulders only, body cut off at the chest
+  { id: 'c', frames: 8, width: 256, height: 256, fps: 10, trim: { top: 0.09, bottom: 1, left: 0.008, right: 0.992 }, scale: 0.55 },
+  { id: 'd', frames: 16, width: 177, height: 177, fps: 14, trim: { top: 0.034, bottom: 1, left: 0.023, right: 0.972 } },
+  { id: 'e', frames: 8, width: 240, height: 240, fps: 14, trim: { top: 0.013, bottom: 0.971, left: 0.167, right: 0.933 } },
+  { id: 'g', frames: 15, width: 256, height: 255, fps: 9, trim: { top: 0.039, bottom: 1, left: 0.074, right: 0.957 } },
+  { id: 'h', frames: 9, width: 256, height: 218, fps: 20, trim: { top: 0.087, bottom: 0.812, left: 0.188, right: 0.801 } },
+  { id: 'j', frames: 14, width: 240, height: 240, fps: 10, trim: { top: 0.121, bottom: 0.933, left: 0.221, right: 0.813 } },
+  { id: 'k', frames: 9, width: 256, height: 256, fps: 10, trim: { top: 0.039, bottom: 0.957, left: 0.07, right: 0.953 } },
+  { id: 'l', frames: 9, width: 480, height: 480, fps: 10, trim: { top: 0.069, bottom: 0.852, left: 0.144, right: 0.981 } },
+  { id: 'x', frames: 35, width: 240, height: 240, fps: 10, trim: { top: 0, bottom: 0.996, left: 0.075, right: 0.871 } },
+  { id: 'z', frames: 20, width: 240, height: 240, fps: 10, trim: { top: 0.05, bottom: 0.958, left: 0.104, right: 0.921 } },
+  { id: 'hanhan_video_dance', frames: 40, width: 256, height: 372, fps: 10, trim: { top: 0.102, bottom: 0.844, left: 0, right: 1 } },
+  { id: 'mushroom_dance_01', frames: 14, width: 240, height: 240, fps: 11, trim: { top: 0.042, bottom: 0.963, left: 0.121, right: 0.967 } },
+  { id: 'mushroom_dance_02', frames: 68, width: 240, height: 240, fps: 24, trim: { top: 0.029, bottom: 0.996, left: 0.038, right: 0.967 } },
+  { id: 'mushroom_dance_03', frames: 4, width: 177, height: 177, fps: 8, trim: { top: 0.028, bottom: 0.983, left: 0.181, right: 0.802 } },
+  { id: 'mushroom_dance_05', frames: 70, width: 240, height: 240, fps: 24, trim: { top: 0, bottom: 0.996, left: 0.146, right: 0.867 } },
+  { id: 'mushroom_dance_06', frames: 24, width: 177, height: 177, fps: 10, trim: { top: 0.051, bottom: 1, left: 0.102, right: 0.887 } },
+  { id: 'mushroom_dance_08', frames: 9, width: 240, height: 240, fps: 7, trim: { top: 0.058, bottom: 0.863, left: 0.133, right: 0.992 } },
+  { id: 'mushroom_dance_09', frames: 10, width: 276, height: 276, fps: 5, trim: { top: 0.101, bottom: 0.971, left: 0.152, right: 0.808 } },
+  { id: 'mushroom_dance_12', frames: 6, width: 240, height: 240, fps: 8, trim: { top: 0.046, bottom: 0.938, left: 0.208, right: 0.775 } },
+  { id: 'mushroom_dance_13', frames: 4, width: 240, height: 240, fps: 10, trim: { top: 0.125, bottom: 0.875, left: 0.225, right: 0.738 } },
+  { id: 'mushroom_dance_14', frames: 4, width: 240, height: 240, fps: 10, trim: { top: 0.129, bottom: 0.863, left: 0.238, right: 0.75 } },
+  { id: 'mushroom_dance_15', frames: 11, width: 240, height: 240, fps: 10, trim: { top: 0.046, bottom: 0.954, left: 0.046, right: 0.954 } },
+  { id: 'mushroom_dance_16', frames: 21, width: 240, height: 240, fps: 14, trim: { top: 0.113, bottom: 0.9, left: 0.196, right: 0.796 } },
+  { id: 'mushroom_dance_17', frames: 16, width: 240, height: 240, fps: 24, trim: { top: 0.104, bottom: 0.9, left: 0.2, right: 0.792 } },
+  { id: 'mushroom_dance_18', frames: 45, width: 240, height: 240, fps: 10, trim: { top: 0.088, bottom: 0.908, left: 0.217, right: 0.838 } },
+  { id: 'mushroom_dance_19', frames: 35, width: 240, height: 240, fps: 24, trim: { top: 0, bottom: 0.996, left: 0.075, right: 0.871 } },
+  // Cropped portrait, same as 'c'
+  { id: 'mushroom_dance_42', frames: 4, width: 177, height: 177, fps: 14, trim: { top: 0.09, bottom: 1, left: 0.011, right: 0.972 }, scale: 0.55 },
+  { id: 'mushroom_dance_55', frames: 10, width: 240, height: 240, fps: 10, trim: { top: 0.15, bottom: 0.9, left: 0.246, right: 0.775 } },
+  { id: 'mushroom_magic_02', frames: 16, width: 240, height: 240, fps: 24, trim: { top: 0.038, bottom: 0.979, left: 0.225, right: 0.821 } },
+  { id: 'mushroom_magic_05', frames: 31, width: 240, height: 240, fps: 10, trim: { top: 0.042, bottom: 0.967, left: 0.221, right: 0.888 } },
+  { id: 'mushroom_magic_07', frames: 27, width: 240, height: 240, fps: 24, trim: { top: 0.004, bottom: 0.996, left: 0.1, right: 0.888 } },
 ];
 
 export const CLIPS_BY_ID = new Map(DANCE_CLIPS.map((c) => [c.id, c]));

@@ -23,6 +23,12 @@ export const CameraView = {
   Screen: 'screen',
   TopDown: 'top-down',
   FollowMe: 'follow-me',
+  /** Eye level from the back of the room: booths near, crowd and stage behind */
+  RoomWide: 'room-wide',
+  /** Same height, swung left so the VIP booths lead the eye to the stage */
+  BoothSide: 'booth-side',
+  /** Low and close to the floor, looking up past the dancers at the LED wall */
+  LowAngle: 'low-angle',
 } as const;
 export type CameraView = (typeof CameraView)[keyof typeof CameraView];
 
@@ -201,7 +207,23 @@ export interface TikTokGifter {
 }
 
 /** Real TikTok artwork for the gifts that have a rule, keyed by gift kind */
-export type TikTokGiftIcons = Partial<Record<'rose' | 'rosa' | 'tiktok', string>>;
+/** The gifts that have a rule in the bar. Ids match GIFT_RULES in server/index.ts */
+export type TikTokGiftKind =
+  | 'rose'
+  | 'rosa'
+  | 'tiktok'
+  | 'gg'
+  | 'heart'
+  | 'perfume'
+  | 'doughnut'
+  | 'confetti'
+  | 'money'
+  | 'galaxy';
+
+export type TikTokGiftIcons = Partial<Record<TikTokGiftKind, string>>;
+
+/** How many of each ruled gift the room has received this session */
+export type TikTokGiftCounts = Partial<Record<TikTokGiftKind, number>>;
 
 /** A TikTok viewer currently shown as a character on the floor */
 export interface TikTokViewer {
@@ -212,6 +234,33 @@ export interface TikTokViewer {
   /** Server time they first appeared — drives the drop-in and camera focus */
   joinedAt: number;
 }
+
+/**
+ * What a gift does to the scene, on top of whatever the camera does.
+ *
+ * Kept separate from `kind` on purpose: `kind` is the *camera's* intent and
+ * only has a handful of meaningful values, while effects are purely visual and
+ * will keep growing as gifts are added. Folding them together would mean every
+ * new sparkle needed a camera rule to go with it.
+ *
+ *  - `skin`      swap the sender's character
+ *  - `crowdJump` everyone on the floor hops at once
+ *  - `hearts`    hearts stream up around the sender
+ *  - `floorWash` dance floor runs a pastel colour wash
+ *  - `giant`     the sender swells to double size
+ *  - `confetti`  paper burst over the whole room
+ *  - `moneyRain` gold coins fall, sender's name across the screen
+ *  - `galaxy`    house lights out, lasers and strobes to the ceiling
+ */
+export type TikTokEffect =
+  | 'skin'
+  | 'crowdJump'
+  | 'hearts'
+  | 'floorWash'
+  | 'giant'
+  | 'confetti'
+  | 'moneyRain'
+  | 'galaxy';
 
 /**
  * One-off reaction triggered by a viewer.
@@ -229,6 +278,17 @@ export interface TikTokAction {
   likes?: number;
   /** Set when a gift caused this action, which earns the viewer a title */
   fromGift?: boolean;
+  /**
+   * Whether this action may take the camera. False means "do your thing but
+   * leave the shot alone" — the skin still swaps, the walk to the bar still
+   * happens, the effect still fires, but the cinematic pan keeps running.
+   * Defaults to true when absent.
+   */
+  camera?: boolean;
+  /** Scene effect this gift fires, if any */
+  effect?: TikTokEffect;
+  /** Gift that caused it, for the on-screen banner */
+  giftName?: string;
 }
 
 export interface TikTokStatus {
@@ -284,6 +344,7 @@ export interface ServerToClientEvents {
   'tiktok:leaderboard': (top: TikTokGifter[]) => void;
   'tiktok:viewers': (viewers: TikTokViewer[]) => void;
   'tiktok:giftIcons': (icons: TikTokGiftIcons) => void;
+  'tiktok:giftCounts': (counts: TikTokGiftCounts) => void;
   'tiktok:action': (action: TikTokAction) => void;
 }
 
